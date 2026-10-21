@@ -1,0 +1,14 @@
+{
+    "hooks": {
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "codex exec \"Review the changes made since last commit and write the results to the file 'recent_changes.md' under planning folder\""
+                    }
+                ]
+            }
+        ]
+    }
+}
