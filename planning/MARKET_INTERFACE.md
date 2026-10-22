@@ -2,6 +2,8 @@
 
 Design of the single Python API the FinAlly backend uses to get stock prices (real-time and end-of-day). It uses **DhanHQ** when `DHANHQ_API_KEY` is set, and the built-in **simulator** otherwise. Nothing outside `app/market/` knows which one is active.
 
+> **Status:** the requirements, rationale and open questions here still stand, but the **code in this document is a sketch**. The implemented and tested versions (227 passing tests) are in [MARKET_DATA_DESIGN.md](MARKET_DATA_DESIGN.md), which wins wherever the two differ (e.g. exception names end in `Error`, the Dhan client is `market_quotes()`-based, the instrument list comes from `/v2/instrument/NSE_EQ`).
+
 Inputs: [DHANHQ_API](DHANHQ_API.md) (what Dhan offers and its constraints) and [MARKET_SIMULATOR](MARKET_SIMULATOR.md) (the fallback). Extends the existing `backend/app/market/` package (`PriceCache`, `PriceUpdate`, `MarketDataSource`, `SimulatorDataSource`, `MassiveDataSource`, `create_market_data_source`, SSE router). **This is an evolution, not a rewrite**: the push-into-cache architecture from PLAN.md §6 stays.
 
 ---

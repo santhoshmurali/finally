@@ -2,6 +2,8 @@
 
 The simulator is the default price source (no `DHANHQ_API_KEY`). It must look and behave like a live market well enough to demo the whole product, while being free, offline and, for tests, **deterministic**. It implements the same `MarketDataSource` interface as the Dhan source ([MARKET_INTERFACE.md](MARKET_INTERFACE.md)), so nothing downstream can tell the difference.
 
+> **Status:** the approach here stands, but the **code is a sketch**; the implemented and tested versions are in [MARKET_DATA_DESIGN.md](MARKET_DATA_DESIGN.md) §5, which wins wherever the two differ.
+
 This document describes the approach, the existing implementation (`backend/app/market/simulator.py`, `seed_prices.py`), the gaps versus PLAN.md and the interface, and the additions that close them.
 
 ---
@@ -164,9 +166,9 @@ Currently `random.uniform(50, 300)` per start, so the same ticker has a differen
 import zlib
 
 def derived_seed_price(ticker: str) -> float:
-    """Stable pseudo-random price in [20, 500) from the symbol alone."""
-    h = zlib.crc32(ticker.encode())
-    return round(20 + (h % 48_000) / 100, 2)        # 20.00 … 499.99
+    """Stable pseudo-random price in [50, 300) from the symbol alone."""
+    h = zlib.crc32(ticker.upper().encode())
+    return round(50 + (h % 25_000) / 100, 2)        # 50.00 … 299.99
 ```
 
 `is_supported` for the simulator accepts any symbol matching `^[A-Z][A-Z0-9.&-]{0,14}$` (so `"???"` and empty strings are rejected, while `BRK.B`, `M&M`, `PYPL` pass). Real-market validity is not checkable offline; PLAN says unsupported tickers are rejected, and this is the simulator's definition of supported.
