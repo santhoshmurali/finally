@@ -512,7 +512,7 @@ class InstrumentResolver:
         return r.text
 ```
 
-Security IDs for the ten default NSE tickers were verified against the live list (DHANHQ_API.md §5). Phase 2 adds a second resolver for US stocks (`INX_EQ`, global CSV) behind the same `resolve()` shape; `Instrument.segment` then routes to the right transport.
+Security IDs for the ten default NSE tickers were verified against the live list (DHANHQ_API.md §5). Phase 2 adds a second resolver for US stocks (`INX_EQ`; the global CSV's `SYMBOL` → `SCRIP_CODE`, unique per symbol, all ten default tickers verified present, see DHANHQ_API.md §5) behind the same `resolve()` shape; `Instrument.segment` then routes to the right transport.
 
 ### 6.4 `DhanDataSource`: lifecycle, polling, previous close, EOD
 
@@ -724,6 +724,7 @@ def _group(insts: list[Instrument]) -> dict[str, list[int]]:
 
 Not needed for MVP. Hooks if/when wanted:
 
+- A feed that connects and is then dropped with no close frame and no data (what Dhan does on a bad token, observed) must count as an auth failure: back off (30 s → 5 min), set `healthy=False`, and stop after repeated occurrences rather than reconnecting in a loop.
 - `DhanDataSource` gains `use_websocket: bool`; a `DhanFeedStream` task (DHANHQ_API.md §8.4) replaces `_run_loop`, mapping `(segment_code, security_id)` back via `resolver.by_key()` and writing `cache.update(...)`. The prev-close packet (code 6) then replaces the history-derived value. Keep the REST poll as a 30 s reconciliation.
 - US tickers: a second resolver over the global CSV and a `GlobalFeedStream`; `get_daily_bars` for `INX_EQ` raises `CapabilityError` until a historical endpoint is confirmed. Currency becomes per-instrument (`INR`/`USD`), which needs `Instrument.currency` and a UI that tolerates mixed currencies (portfolio totals would need FX). **Recommendation: do not mix; pick the Indian universe in Dhan mode.**
 
@@ -859,7 +860,7 @@ Binary-feed parsers (phase 2) get table-driven tests built with `struct.pack` us
 
 ## 12. Open questions for the project owner
 
-1. **Universe in Dhan mode:** Indian equities in INR (recommended) vs. US stocks via the Global feed (more moving parts; no REST history). The choice affects the default watchlist, the currency symbol and the LLM prompt.
+1. **Universe in Dhan mode:** Indian equities in INR (recommended) vs. US stocks via the Global feed. US symbols all resolve, but prices come only from a WebSocket that is unverified without a token, and there is no EOD source. The choice affects the default watchlist, the currency symbol and the LLM prompt.
 2. **Keep Massive?** Dhan covers the "real data" role; Massive keeps the US-equity real-data path alive.
 3. **Token operations:** accept a manually pasted 24 h token (simple, needs a restart or hot-reload when it expires) vs. implementing `RenewToken` / TOTP generation (more credential surface).
 4. **Data API subscription:** Data APIs are separately chargeable (DHANHQ_API.md §2.3); confirm the account has it before relying on quotes/history. The sandbox cannot substitute (no quote endpoints).

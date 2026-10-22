@@ -17,7 +17,8 @@ Researched on **2026-10-22** directly against:
 | Sandbox OpenAPI spec, `https://sandbox.dhan.co/v2/v3/api-docs` (UI: <https://sandbox.dhan.co/v2/#/>) | Which endpoints the sandbox offers |
 | `dhanhq` Python SDK 2.3.0 source (PyPI) | Global-Stocks (US) feed, binary parsing cross-check |
 | Unauthenticated probes of the live hosts (invalid token) | Real error body shapes, sandbox 404 on quote endpoints, segment-wise instrument list |
-| Real instrument list `GET /v2/instrument/NSE_EQ` (10,195 rows) | Column names, security IDs for the default watchlist |
+| Real instrument lists: `GET /v2/instrument/NSE_EQ` (10,195 rows), compact all-segment CSV (26.9 MB), US stock list (11,458 rows) | Column names, security IDs for the default NSE and US watchlists |
+| Unauthenticated WebSocket connects to both feed hosts | Connection behaviour on a bad token |
 
 Tags used below:
 
@@ -36,12 +37,12 @@ Tags used below:
 **DhanHQ is an Indian broker API.** Market-data coverage **[DOCS/SPEC]**:
 
 - NSE / BSE equities, indices (`IDX_I`), F&O, currency; MCX commodities, via REST quote/history and the WebSocket feed.
-- **US "Global Stocks"** exists in the production spec as `/globalstocks/*`, but only for *trading* (orders, trades, holdings, fund limit, market status, margin/charge estimates). **There is no REST quote or history endpoint for US stocks [SPEC].** A US live feed (`wss://global-stocks-api-feed.dhan.co/`) exists only in the SDK **[SDK]** and is not described in the official docs pages.
+- **US "Global Stocks"** exists in the production spec as `/globalstocks/*`, but only for *trading* (orders, trades, holdings, fund limit, market status, margin/charge estimates). **There is no REST quote or history endpoint for US stocks [SPEC].** A US live feed (`wss://global-stocks-api-feed.dhan.co/`) exists only in the SDK **[SDK]** and is not described in the official docs pages (the host does accept connections **[PROBED]**).
 
 FinAlly's default watchlist is US tickers in USD. Consequences:
 
 1. With DhanHQ the natural universe is **NSE equities in INR** (RELIANCE, TCS, INFY, …).
-2. US tickers are reachable only through the SDK-documented Global Stocks WebSocket, and there is no documented EOD/history for them.
+2. US tickers **can all be resolved to Dhan IDs** (all ten default tickers are in Dhan's US list, §5), but prices are reachable only through the SDK-documented Global Stocks WebSocket (not exercised without a token), and there is no documented EOD/history for them.
 3. Every ticker must be mapped to a numeric **security ID** via Dhan's instrument list (§5); the quote/history/feed APIs do not accept symbols.
 
 These drive the design choices in MARKET_INTERFACE.md (symbol resolver, `currency`, per-mode default watchlist, capability errors).
@@ -156,7 +157,7 @@ Three ways to get the list **[DOCS]**:
 | Source | URL | Notes |
 |---|---|---|
 | **Segment-wise (recommended)** | `GET https://api.dhan.co/v2/instrument/{exchangeSegment}` e.g. `…/instrument/NSE_EQ` | **No auth needed [PROBED]**; answers `302` to a pre-signed S3 URL (`s3.ap-south-1.amazonaws.com`), so the HTTP client **must follow redirects** and the network must allow that host. NSE_EQ is ~1.6 MB / 10,195 rows. |
-| Compact (all segments) | `https://images.dhan.co/api-data/api-scrip-master.csv` | Larger; `SEM_*` column names |
+| Compact (all segments) | `https://images.dhan.co/api-data/api-scrip-master.csv` | **26.9 MB** **[PROBED]**; `SEM_*` columns (`SEM_EXM_EXCH_ID, SEM_SEGMENT, SEM_SMST_SECURITY_ID, SEM_INSTRUMENT_NAME, SEM_EXPIRY_CODE, SEM_TRADING_SYMBOL, SEM_LOT_UNITS, SEM_CUSTOM_SYMBOL, SEM_EXPIRY_DATE, SEM_STRIKE_PRICE, SEM_OPTION_TYPE, SEM_TICK_SIZE, SEM_EXPIRY_FLAG, SEM_EXCH_INSTRUMENT_TYPE, SEM_SERIES, SM_SYMBOL_NAME`). Its NSE `EQUITY`/`EQ` rows match the segment-wise list exactly (2,732 of 2,732 symbols, identical IDs) **[PROBED]**, so the two are interchangeable; prefer the 1.6 MB segment-wise file |
 | Detailed (all segments) | `https://images.dhan.co/api-data/api-scrip-master-detailed.csv` | Same columns as the segment-wise file |
 
 **Segment-wise / detailed columns [PROBED]** (33): `EXCH_ID, SEGMENT, SECURITY_ID, ISIN, INSTRUMENT, UNDERLYING_SECURITY_ID, UNDERLYING_SYMBOL, SYMBOL_NAME, DISPLAY_NAME, INSTRUMENT_TYPE, SERIES, LOT_SIZE, SM_EXPIRY_DATE, STRIKE_PRICE, OPTION_TYPE, TICK_SIZE, EXPIRY_FLAG, BRACKET_FLAG, COVER_FLAG, ASM_GSM_FLAG, ASM_GSM_CATEGORY, BUY_SELL_INDICATOR, …, MTF_LEVERAGE, SM_UPPER_LIMIT, SM_LOWER_LIMIT, SM_FREEZE_QTY`.
@@ -199,7 +200,21 @@ ids = load_nse_equities()
 assert ids["TCS"] == 11536
 ```
 
-The US-stock list (SDK only) is `https://api-global-stocks.dhan.co/api-data/us-stock-scrip-master.csv` with columns `EXCHANGE, SEGMENT, SCRIP_CODE, ISIN_CODE, SYMBOL, SYMBOL_NAME, EXCH_SYMBOL, CUSTOM_SYMBOL, TRADING_SYMBOL, …` **[SDK]**; it was not reachable from the research environment, and that `SCRIP_CODE` is the feed's `securityId` is **[UNVERIFIED]**.
+### US stock list **[PROBED]**
+
+`https://api-global-stocks.dhan.co/api-data/us-stock-scrip-master.csv` (SDK-referenced, not in the docs pages): 11,458 rows, 2 MB, columns `EXCHANGE, SEGMENT, SCRIP_CODE, ISIN_CODE, SYMBOL, SYMBOL_NAME, EXCH_SYMBOL, CUSTOM_SYMBOL, TRADING_SYMBOL, FRACTION, CUSTOM_EXCH, INSTRUMENT_NAME, TICK_SIZE, LOT_SIZE, UPPER_LIMIT, LOWER_LIMIT, UPDATE_DATE`. Every row is `EXCHANGE=INX`, `SEGMENT=E`, `INSTRUMENT_NAME=EQUITY` (ETFs included); `CUSTOM_EXCH` is the real venue (NASDAQ 4,881, NYSE 2,727, NYSE Arca 2,527, CBOE 1,323). `SYMBOL` is unique (no duplicates) and equals `EXCH_SYMBOL` and `TRADING_SYMBOL` for the defaults. `FRACTION=true` marks fractional-share eligibility. `UPPER_LIMIT`/`LOWER_LIMIT` look like price bands. `SCRIP_CODE` is the ID the SDK's feed calls `securityId` (that mapping is **[SDK]**; no authenticated subscribe was tried).
+
+All ten FinAlly default tickers are present:
+
+| Ticker | SCRIP_CODE | Venue | | Ticker | SCRIP_CODE | Venue |
+|---|---|---|---|---|---|---|
+| AAPL | 10000025 | NASDAQ | | META | 10006471 | NASDAQ |
+| GOOGL | 10004393 | NASDAQ | | JPM | 10005648 | NYSE |
+| MSFT | 10006754 | NASDAQ | | V | 10010679 | NYSE |
+| AMZN | 10000496 | NASDAQ | | NFLX | 10007050 | NASDAQ |
+| TSLA | 10010311 | NASDAQ | | NVDA | 10007290 | NASDAQ |
+
+So symbol resolution is not the obstacle for a US universe; the obstacles are (a) quotes only via the WebSocket, (b) no EOD source, (c) account eligibility, all unverified without a token.
 
 ---
 
@@ -385,7 +400,7 @@ Tick-by-tick push; alternative to polling. REST polling at 1–2 s is simpler an
 wss://api-feed.dhan.co?version=2&token=<ACCESS_TOKEN>&clientId=<CLIENT_ID>&authType=2
 ```
 
-Auth is in the query string (the token appears in the URL, so **never log it**). Authorisation completes asynchronously after connect; failure closes the socket shortly after. **Keep-alive:** the server pings every **10 s**; the client library must answer with a pong (automatic in `websockets`); a client silent for **>40 s** is disconnected.
+Auth is in the query string (the token appears in the URL, so **never log it**). Authorisation completes asynchronously after connect; failure closes the socket shortly after. **[PROBED]** with an invalid token: the WebSocket handshake succeeds, a subscribe message is accepted, then the server drops the connection **without a close frame and without a disconnect packet**, so a client must treat "connected, then abruptly closed with no data" as a probable auth/subscription problem and back off, not reconnect in a tight loop. **Keep-alive:** the server pings every **10 s**; the client library must answer with a pong (automatic in `websockets`); a client silent for **>40 s** is disconnected.
 
 ### 8.2 Subscribe / unsubscribe (JSON text frames)
 
@@ -482,7 +497,7 @@ Not in the official docs pages; included because FinAlly's default tickers are U
 wss://global-stocks-api-feed.dhan.co/?clientId=<ID>&token=<TOKEN>&authType=2&version=2
 ```
 
-Subscribe (lowerCamelCase keys): `{"requestCode": 15, "instrumentCount": 1, "instrumentList": [{"exchangeSegment": "INX_EQ", "securityId": "<SCRIP_CODE>"}]}`; codes `15/16` Trade, `17/18` OHLC, `12` disconnect. Packets use an 11-byte header (`<BiiBB`: segment, scrip id, scrip id 2, msg length, msg code); one frame may hold several packets: code 1 Trade (`<fiii`: LTP, volume, LTT, LUT), 3 OHLC (`<ffff`), 32 Previous close (`<f`), 29 market status, 33 circuit limits, 36 52-week range, 50 error (805–809).
+The host accepts connections and, like the India feed, drops a bad-token connection without a close frame **[PROBED]**. Subscribe (lowerCamelCase keys): `{"requestCode": 15, "instrumentCount": 1, "instrumentList": [{"exchangeSegment": "INX_EQ", "securityId": "<SCRIP_CODE>"}]}`; codes `15/16` Trade, `17/18` OHLC, `12` disconnect. Packets use an 11-byte header (`<BiiBB`: segment, scrip id, scrip id 2, msg length, msg code); one frame may hold several packets: code 1 Trade (`<fiii`: LTP, volume, LTT, LUT), 3 OHLC (`<ffff`), 32 Previous close (`<f`), 29 market status, 33 circuit limits, 36 52-week range, 50 error (805–809).
 
 REST for US stocks is limited to trading and `GET /v2/globalstocks/marketstatus` **[SPEC]**; no quotes/history. For US-stock EOD prices Dhan is **not** a documented source.
 
@@ -568,7 +583,7 @@ Run it against production, and (optionally) against the sandbox with `DHANHQ_BAS
 3. Behaviour for empty ranges / holidays (`DH-907` vs empty arrays) and for instruments missing from a quote request (omitted vs zeroed).
 4. HTTP status used for rate limiting (429 vs 400 + `DH-904`/`805`).
 5. Sandbox: token source, and whether its candles are real or synthetic.
-6. US feed: `SCRIP_CODE` as `securityId`, account eligibility, and availability of any EOD source.
+6. US feed: that `SCRIP_CODE` is accepted as `securityId`, that prices actually stream for an eligible account, and availability of any EOD source (symbol resolution itself is verified, §5).
 7. Exact Data-API subscription price/terms ("mentioned on the platform").
 
 ---
