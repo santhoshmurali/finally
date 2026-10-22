@@ -29,6 +29,7 @@ Inputs: [DHANHQ_API](DHANHQ_API.md) (what Dhan offers and its constraints) and [
 |---|---|---|
 | `DHANHQ_API_KEY` | selects Dhan | Dhan **access token** (JWT). Non-empty ⇒ Dhan mode |
 | `DHANHQ_CLIENT_ID` | with the above | Dhan client ID. Dhan needs *both* credentials; missing ⇒ startup error |
+| `DHANHQ_BASE_URL` | no (default `https://api.dhan.co/v2`) | Set to `https://sandbox.dhan.co/v2` to target the sandbox. Sandbox market-data coverage is unverified (DHANHQ_API.md §2) |
 | `DHANHQ_POLL_INTERVAL` | no (default `2.0`) | Seconds between quote polls; clamped to ≥ 1.0 (Quote API limit is 1 req/s) |
 | `DHANHQ_CACHE_DIR` | no (default `/app/db`) | Where the instrument master CSV is cached (the Docker volume) |
 | `MASSIVE_API_KEY` | no | Legacy source; kept only for backward compatibility (see below) |
@@ -341,9 +342,10 @@ class DhanClient:
     BASE_URL = "https://api.dhan.co/v2"
 
     def __init__(self, client_id: str, access_token: str, *,
+                 base_url: str | None = None,
                  http: httpx.AsyncClient | None = None) -> None:
         self._http = http or httpx.AsyncClient(
-            base_url=self.BASE_URL,
+            base_url=base_url or self.BASE_URL,
             headers={"access-token": access_token, "client-id": client_id,
                      "Content-Type": "application/json", "Accept": "application/json"},
             timeout=httpx.Timeout(10.0),
@@ -521,10 +523,11 @@ class DhanDataSource(MarketDataSource):
 
     def __init__(self, client_id: str, access_token: str, price_cache: PriceCache,
                  cache_dir: Path, poll_interval: float = 2.0, *,
+                 base_url: str | None = None,
                  client: DhanClient | None = None,
                  resolver: InstrumentResolver | None = None) -> None:
         self._cache = price_cache
-        self._client = client or DhanClient(client_id, access_token)
+        self._client = client or DhanClient(client_id, access_token, base_url=base_url)
         self._resolver = resolver or InstrumentResolver(cache_dir)
         self._interval = max(1.0, poll_interval)
         self._tickers: dict[str, Instrument] = {}      # active, resolved tickers
@@ -739,6 +742,7 @@ def create_market_data_source(price_cache: PriceCache) -> MarketDataSource:
             client_id, token, price_cache,
             cache_dir=Path(os.environ.get("DHANHQ_CACHE_DIR", "/app/db")),
             poll_interval=float(os.environ.get("DHANHQ_POLL_INTERVAL", "2.0")),
+            base_url=os.environ.get("DHANHQ_BASE_URL") or None,
         )
     if os.environ.get("MASSIVE_API_KEY", "").strip():
         from .massive_client import MassiveDataSource
@@ -815,7 +819,7 @@ Binary-feed parsers (phase 2) get table-driven tests built with `struct.pack` us
 4. `dhan/` package + `httpx` dependency (`uv add httpx`). `websockets` only in phase 2.
 5. Factory + `default_watchlist()`; wire into DB seeding and `/api/health`.
 6. Update `.env.example`, PLAN.md §5/§6 (Dhan vars, Massive status), `backend/CLAUDE.md`, `MARKET_DATA_SUMMARY.md`.
-7. Run the Dhan smoke test with a real token; fix the [UNVERIFIED] items in DHANHQ_API.md; add fixtures.
+7. Run the Dhan smoke test with a real token (against production, and against the sandbox via `DHANHQ_BASE_URL` if you want to know what it supports); fix the [UNVERIFIED] items in DHANHQ_API.md; add fixtures.
 
 ---
 

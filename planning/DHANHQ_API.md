@@ -18,6 +18,15 @@ The official docs site (`dhanhq.co/docs/v2/`) was **not reachable** from the res
 
 Before implementing, run the smoke test in §11 with a real token. It exercises every [UNVERIFIED] item that matters.
 
+**Interactive API references (Swagger UI), not readable from the research environment:**
+
+| Environment | URL |
+|---|---|
+| Production | <https://api.dhan.co/v2/#/> |
+| Sandbox | <https://sandbox.dhan.co/v2/#/> |
+
+Both hosts were rejected by the environment's network policy (HTTP 403 at the proxy), so this document has **not** been cross-checked against them. Once `api.dhan.co` and `sandbox.dhan.co` are allowed (or someone pastes the Swagger JSON/pages), the request/response schemas in §6, §7 and §10 and every [UNVERIFIED] tag should be re-checked against them.
+
 Official references to re-check: <https://dhanhq.co/docs/v2/> (Market Quote, Historical Data, Live Market Feed, Instruments, Annexure), <https://dhanhq.co/docs/DhanHQ-py/>, <https://github.com/dhan-oss/DhanHQ-py>.
 
 ---
@@ -50,10 +59,13 @@ These drive the design choices in MARKET_INTERFACE.md (symbol resolver, `currenc
 
 > The task's `DHANHQ_API_KEY` env var maps to the **access token**. A companion `DHANCLIENT_ID`-style variable is mandatory; this project names it `DHANHQ_CLIENT_ID` (see MARKET_INTERFACE.md §2).
 
-Base URLs **[SDK]**:
+Base URLs:
 
-- REST: `https://api.dhan.co/v2`
-- Auth server: `https://auth.dhan.co`
+- REST (production): `https://api.dhan.co/v2` **[SDK]**
+- REST (sandbox): `https://sandbox.dhan.co/v2` **[provided by the project owner; not verified]**
+- Auth server: `https://auth.dhan.co` **[SDK]**
+
+**Sandbox: what is and isn't known.** A secondary source describes Dhan's sandbox as a place to test API requests/responses and order workflows *without real market trades*, not as live-market paper trading. Whether the sandbox serves **market quotes, historical candles or the live WebSocket feed**, whether it needs separate credentials/tokens, and whether its prices are real, static or synthetic are all **unknown**. Do not assume it can substitute for production market data; the smoke test in §11 should be run against the sandbox base URL too and the result recorded here. The client in MARKET_INTERFACE.md takes the base URL from configuration, so switching is a one-line env change.
 
 Headers on every REST call **[SDK]**:
 
