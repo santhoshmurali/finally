@@ -27,9 +27,20 @@ from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_
   - `remove(ticker)`
   - `version` property — monotonic counter, increments on every update (for SSE change detection)
 
-- **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `MassiveDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`.
+  `previous_close` (previous session close) feeds `day_change` / `day_change_percent`; `PriceCache.update(..., previous_close=)` carries it forward when omitted.
 
-- **`create_market_data_source(cache)`** — Factory. Returns `MassiveDataSource` if `MASSIVE_API_KEY` is set, otherwise `SimulatorDataSource`.
+- **`Bar`** — Immutable daily OHLCV candle (`date`, `open`, `high`, `low`, `close`, `volume`).
+
+- **`MarketDataSource`** — Abstract interface implemented by `DhanDataSource`, `SimulatorDataSource` and `MassiveDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`. Metadata: `name`, `currency`. On-demand (default to raising `CapabilityError`): `is_supported(ticker)`, `get_quotes(tickers)`, `get_daily_bars(ticker, start, end)`, `get_eod_closes(tickers, on=None)`. Errors: `MarketDataError` > `CapabilityError`, `UnknownTickerError`.
+
+- **`create_market_data_source(cache)`** — Factory. `DHANHQ_API_KEY` (+ required `DHANHQ_CLIENT_ID`) -> `DhanDataSource` (NSE equities, INR); else `MASSIVE_API_KEY` -> `MassiveDataSource` (legacy); else `SimulatorDataSource` (`MARKET_SEED` makes it deterministic). `default_watchlist()` returns the seed watchlist for the active market.
+
+### Dhan (`app/market/dhan/`)
+
+- `DhanClient` — async httpx client: `/marketfeed/ohlc` (batched, 1 req/s) and `/charts/historical` (5 req/s); maps both Dhan error body shapes to `DhanAuthError` / `DhanRateLimited` / `DhanNoData` / `DhanError`.
+- `InstrumentResolver` — ticker -> security ID from Dhan's NSE_EQ instrument list (cached on disk, refreshed daily).
+- `DhanDataSource` — polls one quote call per cycle, previous close from daily history, backoff on rate limit, `healthy` flag on auth failure.
+- Env: `DHANHQ_API_KEY`, `DHANHQ_CLIENT_ID`, optional `DHANHQ_BASE_URL`, `DHANHQ_POLL_INTERVAL` (>= 1s), `DHANHQ_CACHE_DIR`.
 
 ### SSE Streaming
 
