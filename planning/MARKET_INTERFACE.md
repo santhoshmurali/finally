@@ -29,8 +29,9 @@ Inputs: [DHANHQ_API](DHANHQ_API.md) (what Dhan offers and its constraints) and [
 |---|---|---|
 | `DHANHQ_API_KEY` | selects Dhan | Dhan **access token** (JWT). Non-empty ⇒ Dhan mode |
 | `DHANHQ_CLIENT_ID` | with the above | Dhan client ID. Dhan needs *both* credentials; missing ⇒ startup error |
+| `DHANHQ_BASE_URL` | no (default `https://api.dhan.co/v2`) | Override the REST base. **Do not point at `https://sandbox.dhan.co/v2` for prices**: the sandbox has no `/marketfeed/*` endpoints (404, confirmed) and only serves trading + `/charts/*` (DHANHQ_API.md §2.2); the factory logs a warning |
 | `DHANHQ_POLL_INTERVAL` | no (default `2.0`) | Seconds between quote polls; clamped to ≥ 1.0 (Quote API limit is 1 req/s) |
-| `DHANHQ_CACHE_DIR` | no (default `/app/db`) | Where the instrument master CSV is cached (the Docker volume) |
+| `DHANHQ_CACHE_DIR` | no (default `/app/db`) | Where the downloaded NSE instrument list is cached (the Docker volume) |
 | `MASSIVE_API_KEY` | no | Legacy source; kept only for backward compatibility (see below) |
 | `MARKET_SEED` | no | Integer; makes the simulator deterministic (tests/demos) |
 
@@ -316,8 +317,32 @@ class DhanError(MarketDataError):
         self.status, self.code = status, code
 
 
-class DhanAuthError(DhanError): ...         # bad/expired token or client id (not retryable)
-class DhanRateLimited(DhanError): ...       # 429 (retry after backoff)
+class DhanAuthError(DhanError): ...         # bad/expired token, client id, or no Data API subscription
+class DhanRateLimited(DhanError): ...       # 429 / DH-904 / 805 (retry after backoff)
+class DhanNoData(DhanError): ...            # DH-907: no data for the request
+
+# Error codes from the official Annexure (DHANHQ_API.md §10)
+_AUTH_CODES = {"DH-901", "DH-902", "806", "807", "808", "809", "810"}
+_RATE_CODES = {"DH-904", "805"}
+
+
+def _error_code(r: httpx.Response) -> tuple[str | None, str]:
+    """Dhan has two error body shapes:
+    trading/charts: {"errorType","errorCode":"DH-901","errorMessage"}
+    quote:          {"data": {"808": "message"}, "status": "failed"}
+    """
+    try:
+        body = r.json()
+    except ValueError:
+        return None, r.text[:200]
+    if isinstance(body, dict):
+        if body.get("errorCode"):
+            return str(body["errorCode"]), str(body.get("errorMessage", ""))
+        data = body.get("data")
+        if body.get("status") == "failed" and isinstance(data, dict) and data:
+            code, msg = next(iter(data.items()))
+            return str(code), str(msg)
+    return None, r.text[:200]
 
 
 class _Throttle:
@@ -341,9 +366,10 @@ class DhanClient:
     BASE_URL = "https://api.dhan.co/v2"
 
     def __init__(self, client_id: str, access_token: str, *,
+                 base_url: str | None = None,
                  http: httpx.AsyncClient | None = None) -> None:
         self._http = http or httpx.AsyncClient(
-            base_url=self.BASE_URL,
+            base_url=base_url or self.BASE_URL,
             headers={"access-token": access_token, "client-id": client_id,
                      "Content-Type": "application/json", "Accept": "application/json"},
             timeout=httpx.Timeout(10.0),
@@ -360,17 +386,16 @@ class DhanClient:
             r = await self._http.post(path, json=body)
         except httpx.HTTPError as e:                       # network/timeout
             raise DhanError(f"{path}: {e.__class__.__name__}: {e}") from e
-        if r.status_code == 429:
-            raise DhanRateLimited(f"{path}: rate limited", status=429)
-        if r.status_code in (401, 403):
-            raise DhanAuthError(f"{path}: auth failed ({r.status_code})", status=r.status_code)
         if r.status_code >= 400:
-            try:
-                err = r.json()
-            except ValueError:
-                err = {}
-            raise DhanError(f"{path}: {r.status_code} {err.get('errorMessage') or r.text[:200]}",
-                            status=r.status_code, code=err.get("errorCode"))
+            code, msg = _error_code(r)
+            detail = f"{path}: HTTP {r.status_code} {code or ''} {msg}".strip()
+            if r.status_code == 429 or code in _RATE_CODES:
+                raise DhanRateLimited(detail, status=r.status_code, code=code)
+            if r.status_code in (401, 403) or code in _AUTH_CODES:
+                raise DhanAuthError(detail, status=r.status_code, code=code)
+            if code == "DH-907":
+                raise DhanNoData(detail, status=r.status_code, code=code)
+            raise DhanError(detail, status=r.status_code, code=code)
         return r.json()
 
     # -- quotes -----------------------------------------------------------
@@ -389,15 +414,18 @@ class DhanClient:
     # -- history -----------------------------------------------------------
     async def daily_bars(self, security_id: int, segment: str, start: date, end: date,
                          instrument: str = "EQUITY") -> list[Bar]:
-        body = await self._post("/charts/historical", {
+        try:
+            body = await self._post("/charts/historical", {
             "securityId": str(security_id),
             "exchangeSegment": segment,
             "instrument": instrument,
             "expiryCode": 0,
             "oi": False,
             "fromDate": start.isoformat(),
-            "toDate": (end + timedelta(days=1)).isoformat(),   # toDate believed exclusive
-        }, self._data_gate)
+            "toDate": (end + timedelta(days=1)).isoformat(),   # toDate is non-inclusive (docs)
+            }, self._data_gate)
+        except DhanNoData:
+            return []
         bars: list[Bar] = []
         for i, ts in enumerate(body.get("timestamp") or []):
             day = datetime.fromtimestamp(ts, IST).date()
@@ -409,7 +437,7 @@ class DhanClient:
 
 ### 6.3 `InstrumentResolver`: ticker ↔ security ID
 
-Responsibilities: download the scrip master (compact CSV), cache it under `DHANHQ_CACHE_DIR` (refresh if older than 24 h), filter NSE cash equities, and expose `resolve(ticker) -> Instrument | None`. It **asserts the CSV header** so a format change fails loudly at startup rather than yielding an empty map.
+Responsibilities: download Dhan's NSE equity instrument list (`GET /v2/instrument/NSE_EQ`, no auth, follows a redirect to S3; the deployment needs egress to `api.dhan.co` and `s3.ap-south-1.amazonaws.com`), cache it under `DHANHQ_CACHE_DIR` (refresh if older than 24 h), keep `EQUITY` rows in series `EQ`, and expose `resolve(ticker) -> Instrument | None`. It **asserts the CSV header** so a format change fails loudly at startup rather than yielding an empty map.
 
 ```python
 # app/market/dhan/instruments.py
@@ -425,22 +453,24 @@ from pathlib import Path
 import httpx
 
 logger = logging.getLogger(__name__)
-COMPACT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
-_REQUIRED = {"SEM_EXM_EXCH_ID", "SEM_SEGMENT", "SEM_SMST_SECURITY_ID",
-             "SEM_INSTRUMENT_NAME", "SEM_TRADING_SYMBOL"}
+# Segment-wise list: no auth, ~1.6 MB, 302-redirects to a pre-signed S3 URL (follow redirects).
+# Always the production host, even if DHANHQ_BASE_URL is overridden.
+NSE_EQ_URL = "https://api.dhan.co/v2/instrument/NSE_EQ"
+_REQUIRED = {"EXCH_ID", "SEGMENT", "SECURITY_ID", "INSTRUMENT", "SERIES", "UNDERLYING_SYMBOL"}
 
 
 @dataclass(frozen=True, slots=True)
 class Instrument:
-    ticker: str          # our symbol, e.g. "TCS"
+    ticker: str          # exchange symbol, e.g. "TCS" (UNDERLYING_SYMBOL)
     security_id: int
     segment: str         # "NSE_EQ"
     instrument: str      # "EQUITY"
+    name: str = ""       # DISPLAY_NAME, e.g. "Tata Consultancy Services"
 
 
 class InstrumentResolver:
     def __init__(self, cache_dir: Path, max_age_s: float = 86_400) -> None:
-        self._path = Path(cache_dir) / "dhan-scrip-master.csv"
+        self._path = Path(cache_dir) / "dhan-nse-eq-instruments.csv"
         self._max_age = max_age_s
         self._by_ticker: dict[str, Instrument] = {}
         self._by_key: dict[tuple[str, int], Instrument] = {}
@@ -450,13 +480,15 @@ class InstrumentResolver:
         reader = csv.DictReader(io.StringIO(text))
         missing = _REQUIRED - set(reader.fieldnames or [])
         if missing:
-            raise RuntimeError(f"Dhan scrip master format changed; missing columns: {sorted(missing)}")
+            raise RuntimeError(f"Dhan instrument list format changed; missing columns: {sorted(missing)}")
         for row in reader:
-            if (row["SEM_EXM_EXCH_ID"] == "NSE" and row["SEM_SEGMENT"] == "E"
-                    and row["SEM_INSTRUMENT_NAME"] == "EQUITY"):
-                inst = Instrument(row["SEM_TRADING_SYMBOL"].strip().upper(),
-                                  int(row["SEM_SMST_SECURITY_ID"]), "NSE_EQ", "EQUITY")
-                self._by_ticker.setdefault(inst.ticker, inst)   # first row wins on duplicates
+            # The file also has INDEX rows and non-EQ series (SG, SM, BE, ...). EQUITY+EQ is unique per symbol.
+            if (row["EXCH_ID"] == "NSE" and row["SEGMENT"] == "E"
+                    and row["INSTRUMENT"] == "EQUITY" and row["SERIES"] == "EQ"):
+                inst = Instrument(row["UNDERLYING_SYMBOL"].strip().upper(),
+                                  int(row["SECURITY_ID"]), "NSE_EQ", "EQUITY",
+                                  row.get("DISPLAY_NAME", "").strip())
+                self._by_ticker.setdefault(inst.ticker, inst)
                 self._by_key[(inst.segment, inst.security_id)] = inst
         logger.info("Dhan instrument master loaded: %d NSE equities", len(self._by_ticker))
 
@@ -470,17 +502,17 @@ class InstrumentResolver:
         if self._path.exists() and time.time() - self._path.stat().st_mtime < self._max_age:
             return self._path.read_text()
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
-            r = await http.get(COMPACT_URL)
+            r = await http.get(NSE_EQ_URL)
             r.raise_for_status()
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(r.text)
         except OSError:
-            logger.warning("Could not cache Dhan scrip master at %s", self._path)
+            logger.warning("Could not cache Dhan instrument list at %s", self._path)
         return r.text
 ```
 
-Phase 2 adds a second resolver for US stocks (`INX_EQ`, global CSV) behind the same `resolve()` shape; `Instrument.segment` then routes to the right transport.
+Security IDs for the ten default NSE tickers were verified against the live list (DHANHQ_API.md §5). Phase 2 adds a second resolver for US stocks (`INX_EQ`; the global CSV's `SYMBOL` → `SCRIP_CODE`, unique per symbol, all ten default tickers verified present, see DHANHQ_API.md §5) behind the same `resolve()` shape; `Instrument.segment` then routes to the right transport.
 
 ### 6.4 `DhanDataSource`: lifecycle, polling, previous close, EOD
 
@@ -488,7 +520,7 @@ Key behaviours:
 
 - **One quote call per cycle** for all priced tickers (grouped by segment), at most once per `poll_interval` (≥ 1 s).
 - Writes `PriceCache.update(ticker, last_price, previous_close=…)`. The SSE layer re-sends the cache every ~500 ms, so a 2 s poll still produces a flowing UI; the flash animation fires on actual changes only.
-- **Previous close** comes from daily history, not from `ohlc.close`. For each ticker we fetch the last ~10 calendar days once (on `start`/`add_ticker`, and again on IST date rollover) and take the latest bar dated **before today (IST)**. `ohlc.close` is only used as a fallback *after* the history lookup for that ticker has finished without a result (so a startup race can't briefly show a wrong day change), because its after-hours semantics are unverified (DHANHQ_API.md §6). Cost: N history calls at 5/s (10 tickers ≈ 2 s, in a background task so `start()` doesn't block).
+- **Previous close** comes from daily history, not from `ohlc.close`. For each ticker we fetch the last ~10 calendar days once (on `start`/`add_ticker`, and again on IST date rollover) and take the latest bar dated **before today (IST)**. `ohlc.close` is only used as a fallback *after* the history lookup for that ticker has finished without a result (so a startup race can't briefly show a wrong day change), because its after-hours semantics are unverified (DHANHQ_API.md §6). Cost: N history calls at 5/s (10 tickers ≈ 2 s, in a background task so `start()` doesn't block). A cheaper alternative to evaluate in the smoke test: poll `/marketfeed/quote` instead of `/ohlc` and take `previous_close = last_price − net_change` (documented as change vs previous day's close); it would remove the N startup history calls but is unverified for `NSE_EQ` (DHANHQ_API.md §12).
 - **Market hours:** NSE cash session is 09:15–15:30 IST, Mon–Fri. Outside it, poll every 30 s (prices are static; one poll per cycle keeps the cache warm and detects a token problem). Exchange holidays are not modelled; Dhan simply returns the last price.
 - **Failure policy:** `DhanRateLimited` → double the interval (cap 30 s) then recover; `DhanAuthError` → set `healthy=False`, log once at ERROR, poll every 60 s (so a renewed token via restart/refresh recovers); other `DhanError` → log, keep last cached prices (stale but visible), retry next cycle. The loop never raises.
 
@@ -521,10 +553,11 @@ class DhanDataSource(MarketDataSource):
 
     def __init__(self, client_id: str, access_token: str, price_cache: PriceCache,
                  cache_dir: Path, poll_interval: float = 2.0, *,
+                 base_url: str | None = None,
                  client: DhanClient | None = None,
                  resolver: InstrumentResolver | None = None) -> None:
         self._cache = price_cache
-        self._client = client or DhanClient(client_id, access_token)
+        self._client = client or DhanClient(client_id, access_token, base_url=base_url)
         self._resolver = resolver or InstrumentResolver(cache_dir)
         self._interval = max(1.0, poll_interval)
         self._tickers: dict[str, Instrument] = {}      # active, resolved tickers
@@ -691,6 +724,7 @@ def _group(insts: list[Instrument]) -> dict[str, list[int]]:
 
 Not needed for MVP. Hooks if/when wanted:
 
+- A feed that connects and is then dropped with no close frame and no data (what Dhan does on a bad token, observed) must count as an auth failure: back off (30 s → 5 min), set `healthy=False`, and stop after repeated occurrences rather than reconnecting in a loop.
 - `DhanDataSource` gains `use_websocket: bool`; a `DhanFeedStream` task (DHANHQ_API.md §8.4) replaces `_run_loop`, mapping `(segment_code, security_id)` back via `resolver.by_key()` and writing `cache.update(...)`. The prev-close packet (code 6) then replaces the history-derived value. Keep the REST poll as a 30 s reconciliation.
 - US tickers: a second resolver over the global CSV and a `GlobalFeedStream`; `get_daily_bars` for `INX_EQ` raises `CapabilityError` until a historical endpoint is confirmed. Currency becomes per-instrument (`INR`/`USD`), which needs `Instrument.currency` and a UI that tolerates mixed currencies (portfolio totals would need FX). **Recommendation: do not mix; pick the Indian universe in Dhan mode.**
 
@@ -734,11 +768,16 @@ def create_market_data_source(price_cache: PriceCache) -> MarketDataSource:
     if creds:
         from .dhan.source import DhanDataSource            # lazy: keeps httpx/CSV cost out of sim mode
         client_id, token = creds
+        base_url = os.environ.get("DHANHQ_BASE_URL") or None
+        if base_url and "sandbox" in base_url:
+            logger.warning("DHANHQ_BASE_URL is the Dhan sandbox, which has no /marketfeed/* quote "
+                           "endpoints: live prices will not work (history/auth only)")
         logger.info("Market data source: DhanHQ (real data, INR)")
         return DhanDataSource(
             client_id, token, price_cache,
             cache_dir=Path(os.environ.get("DHANHQ_CACHE_DIR", "/app/db")),
             poll_interval=float(os.environ.get("DHANHQ_POLL_INTERVAL", "2.0")),
+            base_url=base_url,
         )
     if os.environ.get("MASSIVE_API_KEY", "").strip():
         from .massive_client import MassiveDataSource
@@ -776,10 +815,10 @@ def create_market_data_source(price_cache: PriceCache) -> MarketDataSource:
 | Both Dhan creds not set properly | Startup error with actionable message |
 | Token expired mid-run | `healthy=False`, ERROR logged once, last prices stay in cache (SSE keeps sending stale values; **timestamps stop advancing so the UI can show "stale"**), poll retries every 60 s |
 | 429 | Interval doubles up to 30 s, then recovers |
-| Ticker not in scrip master | `is_supported()` false; if it came from an old DB it is skipped with a WARNING and has no cache entry → API returns no price → UI shows `—`; trades on it are rejected |
+| Ticker not in the instrument list (or not series `EQ`) | `is_supported()` false; if it came from an old DB it is skipped with a WARNING and has no cache entry → API returns no price → UI shows `—`; trades on it are rejected |
 | Market closed | 30 s poll; prices flat; `day_change_percent` is vs. previous close so it still shows the last session's move |
 | History call fails | `previous_close` falls back to `ohlc.close`; if absent, `None` |
-| Scrip-master download fails and no cached copy | Startup error (cannot resolve anything); with a cached copy of any age we use it and warn |
+| Instrument list download fails and no cached copy | Startup error (cannot resolve anything); with a cached copy of any age we use it and warn |
 
 Stale detection: expose `PriceUpdate.timestamp` age; the frontend greys prices older than, say, 15 s while the connection dot stays green. This keeps "connected to our server" distinct from "data is live".
 
@@ -795,8 +834,8 @@ All offline, all fast; no test needs a Dhan account.
 | Response parsing | Fixture JSON for ohlc and historical (copy from the smoke test in DHANHQ_API.md §11 once verified) |
 | Chunking | 2,500 ids ⇒ 3 requests |
 | Throttle | Fake `time.monotonic`/`sleep`: two calls ≥ 1.05 s apart |
-| Error mapping | 401→`DhanAuthError`, 429→`DhanRateLimited`, 400 body→`DhanError(code=…)` |
-| `InstrumentResolver` | Small CSV fixture: NSE equity kept, F&O/BSE rows ignored, header assertion fails loudly |
+| Error mapping | **both body shapes**: `{"errorCode":"DH-901"}` and `{"data":{"808":"…"},"status":"failed"}` → `DhanAuthError`; `DH-904`/`805`/429 → `DhanRateLimited`; `DH-907` on history → empty list; `DH-905` → `DhanError(code=…)` |
+| `InstrumentResolver` | Small CSV fixture: `EQUITY`/`EQ` rows kept; `INDEX`, `SG`/`BE` series and non-NSE rows ignored; header assertion fails loudly; redirect followed |
 | `DhanDataSource` | Inject fake `DhanClient`/resolver; assert cache writes, never-write-zero, prev-close from history, rollover refresh, backoff on 429, `healthy` flip on auth error |
 | Factory | `monkeypatch.setenv`: precedence matrix; missing client id raises |
 | Cache | `previous_close` carry-forward; backward-compat `update()` signature |
@@ -815,14 +854,14 @@ Binary-feed parsers (phase 2) get table-driven tests built with `struct.pack` us
 4. `dhan/` package + `httpx` dependency (`uv add httpx`). `websockets` only in phase 2.
 5. Factory + `default_watchlist()`; wire into DB seeding and `/api/health`.
 6. Update `.env.example`, PLAN.md §5/§6 (Dhan vars, Massive status), `backend/CLAUDE.md`, `MARKET_DATA_SUMMARY.md`.
-7. Run the Dhan smoke test with a real token; fix the [UNVERIFIED] items in DHANHQ_API.md; add fixtures.
+7. Run the Dhan smoke test (DHANHQ_API.md §11) with a real, Data-API-subscribed token against production; fix the [UNVERIFIED] items in DHANHQ_API.md; add fixtures.
 
 ---
 
 ## 12. Open questions for the project owner
 
-1. **Universe in Dhan mode:** Indian equities in INR (recommended) vs. US stocks via the Global feed (more moving parts; no REST history). The choice affects the default watchlist, the currency symbol and the LLM prompt.
+1. **Universe in Dhan mode:** Indian equities in INR (recommended) vs. US stocks via the Global feed. US symbols all resolve, but prices come only from a WebSocket that is unverified without a token, and there is no EOD source. The choice affects the default watchlist, the currency symbol and the LLM prompt.
 2. **Keep Massive?** Dhan covers the "real data" role; Massive keeps the US-equity real-data path alive.
 3. **Token operations:** accept a manually pasted 24 h token (simple, needs a restart or hot-reload when it expires) vs. implementing `RenewToken` / TOTP generation (more credential surface).
-4. **Data API subscription:** confirm the account has it before relying on quotes/history.
+4. **Data API subscription:** Data APIs are separately chargeable (DHANHQ_API.md §2.3); confirm the account has it before relying on quotes/history. The sandbox cannot substitute (no quote endpoints).
 5. **Poll vs. push:** polling at 2 s is the MVP; confirm that is acceptable before investing in the WebSocket path.
