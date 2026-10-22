@@ -1,74 +1,58 @@
-"""Deterministic synthetic daily bars for the simulator."""
+"""Deterministic synthetic daily bars for the simulator (no network, same input -> same bars)."""
 
 from __future__ import annotations
 
 import math
+import random
 import zlib
 from datetime import date, timedelta
 
-import numpy as np
-
 from .models import Bar
 
-DAYS_PER_YEAR = 252
-HISTORY_LOOKBACK_DAYS = 365  # weekdays generated per request; callers slice
+DAILY_SIGMA = 0.015
 
 
-def weekdays_ending_at(end: date, n: int) -> list[date]:
-    """The n weekday dates ending at ``end`` (rolled back if a weekend), ascending."""
-    days: list[date] = []
-    d = end
-    while len(days) < n:
-        if d.weekday() < 5:
-            days.append(d)
-        d -= timedelta(days=1)
-    return days[::-1]
-
-
-def last_trading_day_before(d: date) -> date:
-    """Most recent weekday strictly before ``d``."""
-    d -= timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
-
-
-def synth_daily_bars(
-    ticker: str,
-    end: date,
-    n: int,
-    anchor_price: float,
-    *,
-    mu: float = 0.05,
-    sigma: float = 0.25,
+def synthetic_bars(
+    ticker: str, start: date, end: date, anchor_price: float, today: date | None = None
 ) -> list[Bar]:
-    """Deterministic daily OHLCV bars; the last bar's close equals ``anchor_price``."""
-    if n <= 0:
+    """Completed weekday bars in `start..end`, oldest first.
+
+    The last completed weekday before `today` closes at `anchor_price` (the
+    simulator's previous close); earlier days walk backwards from it.
+    """
+    anchor_day = _previous_weekday(today or date.today())
+    last_day = min(end, anchor_day)
+    first_day = max(start, date(2000, 1, 1))
+    if last_day < first_day:
         return []
-    rng = np.random.default_rng(zlib.crc32(ticker.encode()))
-    sigma_d = sigma / math.sqrt(DAYS_PER_YEAR)
-    r = (mu - 0.5 * sigma**2) / DAYS_PER_YEAR + sigma_d * rng.standard_normal(n)
-    cum = np.cumsum(r)
-    closes = anchor_price * np.exp(cum - cum[-1])
-    gaps = np.exp(rng.normal(0.0, 0.25 * sigma_d, n))
-    opens = np.concatenate(([closes[0]], closes[:-1])) * gaps
-    opens[0] = closes[0]
-    wick_hi = np.abs(rng.normal(0.0, 0.5 * sigma_d, n))
-    wick_lo = np.abs(rng.normal(0.0, 0.5 * sigma_d, n))
-    highs = np.maximum(opens, closes) * (1 + wick_hi)
-    lows = np.minimum(opens, closes) * (1 - wick_lo)
-    base_vol = 500_000 + (zlib.crc32(ticker[::-1].encode()) % 9_500_000)
-    vols = base_vol * np.exp(rng.normal(0.0, 0.3, n)) * (1 + 20 * np.abs(r))
-    return [
-        Bar(
-            d,
-            round(float(o), 2),
-            round(float(h), 2),
-            round(float(lo), 2),
-            round(float(c), 2),
-            int(v),
-        )
-        for d, o, h, lo, c, v in zip(
-            weekdays_ending_at(end, n), opens, highs, lows, closes, vols, strict=True
-        )
-    ]
+    closes: dict[date, float] = {}
+    close, day = anchor_price, anchor_day
+    while day >= first_day:
+        closes[day] = close
+        previous_day = _previous_weekday(day)
+        close = close / math.exp(_daily_return(ticker, day))
+        day = previous_day
+    closes[day] = close  # the session before the range, so the first open is range-independent
+    return [_bar(ticker, d, closes) for d in sorted(closes) if first_day <= d <= last_day]
+
+
+def _bar(ticker: str, day: date, closes: dict[date, float]) -> Bar:
+    rng = random.Random(zlib.crc32(f"{ticker}:bar:{day.toordinal()}".encode()))
+    close = closes[day]
+    open_ = closes.get(_previous_weekday(day), close) * (1 + rng.uniform(-0.004, 0.004))
+    high = max(open_, close) * (1 + rng.uniform(0, 0.008))
+    low = min(open_, close) * (1 - rng.uniform(0, 0.008))
+    return Bar(day, round(open_, 2), round(high, 2), round(low, 2), round(close, 2),
+               rng.randint(200_000, 5_000_000))
+
+
+def _daily_return(ticker: str, day: date) -> float:
+    rng = random.Random(zlib.crc32(f"{ticker}:ret:{day.toordinal()}".encode()))
+    return rng.gauss(0, DAILY_SIGMA)
+
+
+def _previous_weekday(day: date) -> date:
+    day -= timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day

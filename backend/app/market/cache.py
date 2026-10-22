@@ -1,24 +1,26 @@
-"""Thread-safe in-memory price cache."""
+"""In-memory price cache: the single hand-off between price sources and consumers."""
 
 from __future__ import annotations
 
-import time
 from threading import Lock
 
-from .models import PriceUpdate
+from .models import PriceUpdate, now
 
 
 class PriceCache:
-    """Thread-safe in-memory cache of the latest price for each ticker.
+    """Latest `PriceUpdate` per ticker. Sources write, SSE and trades read.
 
-    Writers: SimulatorDataSource or MassiveDataSource (one at a time).
-    Readers: SSE streaming endpoint, portfolio valuation, trade execution.
+    `version` increases on every write so streamers can skip unchanged ticks.
     """
 
     def __init__(self) -> None:
         self._prices: dict[str, PriceUpdate] = {}
         self._lock = Lock()
-        self._version: int = 0  # Monotonically increasing; bumped on every update
+        self._version = 0
+
+    @property
+    def version(self) -> int:
+        return self._version
 
     def update(
         self,
@@ -27,59 +29,59 @@ class PriceCache:
         timestamp: float | None = None,
         previous_close: float | None = None,
     ) -> PriceUpdate:
-        """Record a new price for a ticker. Returns the created PriceUpdate.
-
-        Automatically computes direction and change from the previous price.
-        If this is the first update for the ticker, previous_price == price (direction='flat').
-        ``previous_close`` is carried forward from the prior update when omitted.
-        """
+        """Record a new price. The first price for a ticker is its own previous tick."""
         with self._lock:
-            ts = timestamp or time.time()
-            prev = self._prices.get(ticker)
-            previous_price = prev.price if prev else price
-            if previous_close is None and prev is not None:
-                previous_close = prev.previous_close
-
+            old = self._prices.get(ticker)
             update = PriceUpdate(
                 ticker=ticker,
                 price=round(price, 2),
-                previous_price=round(previous_price, 2),
-                timestamp=ts,
-                previous_close=None if previous_close is None else round(previous_close, 2),
+                previous_price=old.price if old else round(price, 2),
+                previous_close=_pick_close(old, previous_close, price),
+                timestamp=timestamp if timestamp is not None else now(),
             )
             self._prices[ticker] = update
             self._version += 1
             return update
 
-    def get(self, ticker: str) -> PriceUpdate | None:
-        """Get the latest price for a single ticker, or None if unknown."""
+    def set_previous_close(self, ticker: str, previous_close: float) -> None:
+        """Set the prior session close; recomputes the day change of a cached price."""
         with self._lock:
-            return self._prices.get(ticker)
+            old = self._prices.get(ticker)
+            if old is None:
+                return
+            self._prices[ticker] = PriceUpdate(
+                ticker, old.price, old.previous_price, round(previous_close, 2), old.timestamp
+            )
+            self._version += 1
+
+    def get(self, ticker: str) -> PriceUpdate | None:
+        return self._prices.get(ticker)
+
+    def get_price(self, ticker: str) -> float | None:
+        update = self._prices.get(ticker)
+        return update.price if update else None
 
     def get_all(self) -> dict[str, PriceUpdate]:
-        """Snapshot of all current prices. Returns a shallow copy."""
+        """Snapshot copy of every cached price."""
         with self._lock:
             return dict(self._prices)
 
-    def get_price(self, ticker: str) -> float | None:
-        """Convenience: get just the price float, or None."""
-        update = self.get(ticker)
-        return update.price if update else None
-
     def remove(self, ticker: str) -> None:
-        """Remove a ticker from the cache (e.g., when removed from watchlist)."""
         with self._lock:
-            self._prices.pop(ticker, None)
-
-    @property
-    def version(self) -> int:
-        """Current version counter. Useful for SSE change detection."""
-        return self._version
+            if self._prices.pop(ticker, None) is not None:
+                self._version += 1
 
     def __len__(self) -> int:
-        with self._lock:
-            return len(self._prices)
+        return len(self._prices)
 
     def __contains__(self, ticker: str) -> bool:
-        with self._lock:
-            return ticker in self._prices
+        return ticker in self._prices
+
+
+def _pick_close(old: PriceUpdate | None, given: float | None, price: float) -> float:
+    """Explicit close wins, then the carried-forward one, else the price itself."""
+    if given is not None:
+        return round(given, 2)
+    if old is not None:
+        return old.previous_close
+    return round(price, 2)
