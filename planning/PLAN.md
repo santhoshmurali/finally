@@ -14,8 +14,8 @@ This is the capstone project for an agentic AI coding course. It is built entire
 - **Held tickers**: tickers with a non-zero position.
 - **Priced tickers**: watchlist tickers plus held tickers. Only these receive live prices.
 - **Trade**: a buy or sell execution. All trades are market orders, so "order" is not used.
-- **Simulator**: the built-in price generator, used when no Massive key is set.
-- **Massive**: the Polygon.io-backed REST data source (see §5).
+- **Simulator**: the built-in price generator, used when no Dhan token is set.
+- **Dhan**: the DhanHQ live data source for Indian markets (NSE equities, INR), over its WebSocket Live Market Feed (see §5, §6). All prices are in INR (₹).
 
 ## 2. User Experience
 
@@ -24,7 +24,7 @@ This is the capstone project for an agentic AI coding course. It is built entire
 The user runs a single Docker command (or a provided start script). The user opens `http://localhost:8000` in a browser (the start script can optionally open it automatically). No login, no signup. They immediately see:
 
 - A watchlist of 10 default tickers with live-updating prices in a grid
-- $10,000 in virtual cash
+- ₹10,00,000 (₹1,000,000) in virtual cash
 - A dark, data-rich trading terminal aesthetic
 - An AI chat panel ready to assist
 
@@ -77,7 +77,7 @@ The user runs a single Docker command (or a provided start script). The user ope
 - **Database**: SQLite, file `finally.db` in the named Docker volume `finally-data`, mounted at `/app/db` for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
 - **AI integration**: LiteLLM → OpenRouter (Cerebras for fast inference), with structured outputs for trade execution
-- **Market data**: Environment-variable driven — simulator by default, real data via Massive API if key provided
+- **Market data**: Environment-variable driven — simulator by default, live NSE data via the DhanHQ WebSocket feed if a Dhan access token is provided
 
 ### Why These Choices
 
@@ -131,9 +131,15 @@ finally/
 # Required when LLM_MOCK=false: OpenRouter API key for LLM chat functionality
 OPENROUTER_API_KEY=your-openrouter-api-key-here
 
-# Optional: Massive (Polygon.io) API key for real market data
-# If not set, the built-in market simulator is used (recommended for most users)
-MASSIVE_API_KEY=
+# Optional: DhanHQ access token (JWT, valid 24 h) for live NSE market data. Needs the Dhan Data API plan.
+# The client ID is read from the token. If not set, the built-in market simulator is used.
+DHAN_ACESS_TOKEN=
+
+# Optional: overrides the client ID inside the token
+# DHAN_CLIENT_ID=
+
+# Optional: integer seed that makes the simulator reproducible
+# MARKET_SEED=
 
 # Optional: Set to "true" for deterministic mock LLM responses (testing); the OpenRouter key is not needed when true
 LLM_MOCK=false
@@ -141,8 +147,8 @@ LLM_MOCK=false
 
 ### Behavior
 
-- If `MASSIVE_API_KEY` is set and non-empty → backend uses Massive REST API for market data
-- If `MASSIVE_API_KEY` is absent or empty → backend uses the built-in market simulator
+- If `DHAN_ACESS_TOKEN` is set and non-empty → backend streams live NSE prices from DhanHQ (`DHAN_ACCESS_TOKEN` is accepted too; surrounding quotes are stripped). An expired or malformed token stops startup with a clear error rather than silently simulating
+- If `DHAN_ACESS_TOKEN` is absent or empty → backend uses the built-in market simulator
 - If `LLM_MOCK=true` → backend returns deterministic mock LLM responses in the same structured schema as the real LLM (see §9 LLM Mock Mode)
 - The test stack sets `LLM_MOCK=true`; the application default remains `false`
 - The backend reads `.env` from the project root (mounted into the container or read via docker `--env-file`)
@@ -152,34 +158,39 @@ LLM_MOCK=false
 
 ## 6. Market Data
 
-_Open item: configuration names, defaults, and the Massive tier-to-interval mapping are to be defined later._
+Detailed design: [MARKET_DATA_DESIGN.md](MARKET_DATA_DESIGN.md); API: [MARKET_INTERFACE.md](MARKET_INTERFACE.md); provider notes: [DHANHQ_API.md](DHANHQ_API.md); simulator: [MARKET_SIMULATOR.md](MARKET_SIMULATOR.md). **Implemented and tested** (see §13).
+
+Scope is **Indian markets only**: NSE cash equities priced in INR. US stocks are not supported.
 
 ### Two Implementations, One Interface
 
-Both the simulator and the Massive client implement the same abstract interface. The backend selects which to use based on the environment variable. All downstream code (SSE streaming, price cache, frontend) is agnostic to the source.
+Both the simulator and the Dhan source implement the same abstract interface (`MarketDataSource`). The backend selects which to use based on the environment variable. All downstream code (SSE streaming, price cache, frontend) is agnostic to the source.
 
 ### Simulator (Default)
 
 - Generates prices using geometric Brownian motion (GBM) with configurable drift and volatility per ticker
 - Updates at ~500ms intervals
-- Correlated moves across tickers (e.g., tech stocks move together)
+- Correlated moves across tickers (e.g., IT stocks move together, banks move together)
 - Occasional random "events" — sudden 2-5% moves on a ticker for drama
-- Starts from realistic seed prices (e.g., AAPL ~$190, GOOGL ~$175, etc.)
+- Starts from realistic NSE seed prices in INR (e.g., TCS ~₹2,529, RELIANCE ~₹1,209)
 - Simulates a daily close: the previous close is set from the seed price at startup, and all % change figures are measured against it
 - Runs as an in-process background task — no external dependencies
 
-### Massive API (Optional)
+### Dhan Live Feed (Optional)
 
-- REST API polling (not WebSocket) — simpler, works on all tiers
-- Polls for the union of watchlist tickers and held tickers (priced tickers) on a configurable interval
-- Free tier (5 calls/min): poll every 15 seconds
-- Paid tiers: poll every 2-15 seconds depending on tier
-- Parses REST response into the same format as the simulator
+- Uses the DhanHQ **Live Market Feed WebSocket** (push, not polling): one connection, ticker subscriptions in batches of 100 instruments
+- Tickers are NSE equity symbols resolved to Dhan security IDs from Dhan's public instrument list at startup; an unknown symbol is rejected (`UnsupportedTickerError`)
+- On subscribe Dhan sends each ticker's last price and its previous close immediately (also when the market is closed), then pushes a price on every change
+- Day change is measured against the **Previous Close packet** from the feed
+- Prices are stamped with receive time (Dhan's trade-time field is unreliable)
+- Reconnects automatically with backoff and resubscribes; an authentication failure (expired token, no Data plan) stops retrying and marks the source unhealthy for `/api/health`
+- Daily history (EOD candles) via Dhan's REST history endpoint
+- Subscribes the union of watchlist tickers and held tickers (priced tickers); the caller adds and removes tickers at runtime
 
 ### Shared Price Cache
 
-- A single background task (simulator or Massive poller) writes to an in-memory price cache
-- The cache holds the latest price, previous price, and timestamp for each ticker
+- A single background task (simulator or Dhan feed) writes to an in-memory price cache
+- The cache holds the latest price, previous price (prior tick), previous close (prior session), and timestamp for each ticker
 - SSE streams read from this cache and push updates to connected clients
 - This architecture supports future multi-user scenarios without changes to the data layer
 
@@ -188,7 +199,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 - Endpoint: `GET /api/stream/prices`
 - Long-lived SSE connection; client uses native `EventSource` API
 - Each tick (~500ms), the server sends one SSE event containing the latest data for every priced ticker (watchlist plus held tickers)
-- For each ticker in the event: ticker, price, previous price, timestamp, and change direction
+- For each ticker in the event: ticker, price, previous price, previous close, timestamp, change direction, day change and day change percent
 - Client handles reconnection automatically (EventSource has built-in retry)
 
 ---
@@ -209,7 +220,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 
 **users_profile** — User state (cash balance)
 - `user_id` TEXT PRIMARY KEY (default: `"default"`)
-- `cash_balance` REAL (default: `10000.0`)
+- `cash_balance` REAL (default: `1000000.0`, INR)
 - `created_at` TEXT (ISO timestamp)
 
 **watchlist** — Tickers the user is watching
@@ -253,8 +264,8 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 
 ### Default Seed Data
 
-- One user profile: `user_id="default"`, `cash_balance=10000.0`
-- Ten watchlist entries: AAPL, GOOGL, MSFT, AMZN, TSLA, NVDA, META, JPM, V, NFLX
+- One user profile: `user_id="default"`, `cash_balance=1000000.0` (₹10,00,000)
+- Ten watchlist entries (NSE): RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK, SBIN, BHARTIARTL, ITC, LT, HINDUNILVR
 
 ---
 
@@ -320,10 +331,10 @@ The LLM is instructed to respond with JSON matching this schema:
 {
   "message": "Your conversational response to the user",
   "trades": [
-    {"ticker": "AAPL", "quantity": 10, "side": "buy"}
+    {"ticker": "TCS", "quantity": 10, "side": "buy"}
   ],
   "watchlist_changes": [
-    {"ticker": "PYPL", "action": "add"}
+    {"ticker": "WIPRO", "action": "add"}
   ]
 }
 ```
@@ -446,7 +457,7 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 ### Unit Tests (within `frontend/` and `backend/`)
 
 **Backend (pytest)**:
-- Market data: simulator generates valid prices, GBM math is correct, Massive API response parsing works, both implementations conform to the abstract interface
+- Market data: simulator generates valid prices, GBM math is correct, Dhan packet decoding, feed reconnect and REST error mapping work (against fakes), both implementations conform to the abstract interface
 - Portfolio: trade execution logic, P&L calculations, edge cases (selling more than owned, buying with insufficient cash, selling at a loss)
 - LLM: structured output parsing handles all valid schemas, graceful handling of malformed responses, trade validation within chat flow
 - API routes: correct status codes, response shapes, error handling
@@ -465,7 +476,7 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 **Environment**: The test stack (`test/docker-compose.test.yml`) sets `LLM_MOCK=true` for speed and determinism. The application default remains `false`.
 
 **Key Scenarios**:
-- Fresh start: default watchlist appears, $10k balance shown, prices are streaming
+- Fresh start: default watchlist appears, ₹10,00,000 balance shown, prices are streaming
 - Add and remove a ticker from the watchlist
 - Buy shares: cash decreases, position appears, portfolio updates
 - Sell shares: cash increases, position updates or disappears
@@ -474,3 +485,40 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - SSE resilience: disconnect and verify reconnection
 
 _Expected colors, status codes, and response shapes are to be specified during implementation (see §8)._
+
+---
+
+## 13. Implementation Status
+
+_Last updated 2026-10-22. Update this table whenever a component changes state._
+
+| Component | Status | Where | Evidence |
+|---|---|---|---|
+| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 124 unit tests, 100% line coverage |
+| Market data: simulator (GBM, correlation, events, synthetic history) | **Done** | `simulator.py`, `seed_prices.py`, `synthetic_history.py` | unit tests incl. statistical checks; ran under uvicorn |
+| Market data: Dhan live source (WebSocket feed, instrument resolver, REST history) | **Done** | `backend/app/market/dhan/` | unit tests with a scripted fake socket; verified against the real service with a real token (DHANHQ_API.md section 9) |
+| Market data: SSE endpoint `GET /api/stream/prices` | **Done** | `stream.py` | unit tests; streamed from uvicorn with Dhan data and with the simulator |
+| Market data docs | **Done** | `planning/DHANHQ_API.md`, `MARKET_DATA_DESIGN.md`, `MARKET_INTERFACE.md`, `MARKET_SIMULATOR.md` | rewritten to match the code |
+| Database (SQLite schema, seed, lazy init) | Not started | `backend/db/` | |
+| Portfolio and trade API, watchlist API, snapshots task | Not started | | |
+| `/api/health` (should report `source.healthy()`) | Not started | | |
+| LLM chat integration and mock mode | Not started | | |
+| FastAPI app wiring (lifespan, static files) | Not started | | |
+| Frontend (Next.js) | Not started | `frontend/` | |
+| Dockerfile, start/stop scripts | Not started | | |
+| Playwright E2E tests | Not started | `test/` | |
+
+### Market data: contract for the next components
+
+- Create the source once in the FastAPI lifespan: `cache = PriceCache(); source = create_market_source(cache); await source.start(initial_priced_tickers)`; `await source.stop()` on shutdown; mount `create_stream_router(cache)`.
+- The **caller owns the priced set**: call `add_ticker` when a ticker is watched or first bought and `remove_ticker` when it is neither watched nor held. Map `UnsupportedTickerError` to a 4xx for `POST /api/watchlist` and for trades.
+- Trades price from `cache.get_price(ticker)` only; `None` means "not priced yet" and the trade is rejected.
+- Report `source.healthy()` from `/api/health`.
+- Starting cash and the default watchlist changed from the original US spec to INR and NSE tickers (§2, §7); `DEFAULT_WATCHLIST` in `app.market` is the single source for the ten tickers.
+
+### Known limits and open items
+
+- Dhan behaviour during market hours (tick cadence, long-session keep-alive) has not been observed yet; the checks so far ran after the close (DHANHQ_API.md section 11).
+- Dhan tokens last 24 hours and are not renewed automatically; an expired token makes the source unhealthy until a new token is configured and the app restarted (MARKET_DATA_DESIGN.md section 6).
+- The simulator has no market calendar or holiday awareness.
+

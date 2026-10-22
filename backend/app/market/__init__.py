@@ -1,36 +1,30 @@
-"""Market data subsystem for FinAlly.
-
-Public API:
-    PriceUpdate         - Immutable price snapshot dataclass
-    Bar                 - Daily OHLCV candle
-    PriceCache          - Thread-safe in-memory price store
-    MarketDataSource    - Abstract interface for data providers
-    MarketDataError, CapabilityError, UnknownTickerError - error hierarchy
-    create_market_data_source - Factory that selects Dhan, Massive or the simulator
-    default_watchlist   - Seed watchlist matching the active source
-    create_stream_router - FastAPI router factory for SSE endpoint
-"""
+"""Market data: unified interface, Dhan live source and the built-in simulator."""
 
 from .cache import PriceCache
-from .factory import create_market_data_source, default_watchlist
-from .interface import (
-    CapabilityError,
+from .errors import (
+    AuthenticationError,
+    DataUnavailableError,
     MarketDataError,
-    MarketDataSource,
-    UnknownTickerError,
+    RateLimitError,
+    UnsupportedTickerError,
 )
+from .factory import create_market_source
+from .interface import MarketDataSource
 from .models import Bar, PriceUpdate
+from .seed_prices import DEFAULT_WATCHLIST
 from .stream import create_stream_router
 
 __all__ = [
+    "DEFAULT_WATCHLIST",
+    "AuthenticationError",
     "Bar",
-    "CapabilityError",
+    "DataUnavailableError",
     "MarketDataError",
     "MarketDataSource",
     "PriceCache",
     "PriceUpdate",
-    "UnknownTickerError",
-    "create_market_data_source",
+    "RateLimitError",
+    "UnsupportedTickerError",
+    "create_market_source",
     "create_stream_router",
-    "default_watchlist",
 ]

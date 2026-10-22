@@ -1,244 +1,122 @@
-"""Tests for the async Dhan REST client (offline, via httpx.MockTransport)."""
+"""DhanClient history parsing and error mapping against a mock transport."""
 
+import asyncio
 import json
-import time
-from datetime import date, datetime
+from datetime import date
 
 import httpx
 import pytest
 
-from app.market.dhan.client import (
-    IST,
-    DhanAuthError,
-    DhanClient,
-    DhanError,
-    DhanRateLimited,
-    Throttle,
-    parse_error,
+from app.market.dhan import client as client_module
+from app.market.dhan.auth import Credentials
+from app.market.dhan.client import DhanClient
+from app.market.errors import (
+    AuthenticationError,
+    DataUnavailableError,
+    RateLimitError,
 )
 
-BASE = "https://api.dhan.co/v2"
+CREDENTIALS = Credentials("secret-token", "1100", 9e12)
+
+# 2026-10-20 and 2026-10-21 stamped at IST midnight.
+HISTORY = {
+    "open": [10, 20], "high": [11, 21], "low": [9, 19], "close": [10.5, 20.5],
+    "volume": [100, 200], "timestamp": [1792434600, 1792521000], "open_interest": [0, 0],
+}
 
 
 def make_client(handler) -> DhanClient:
-    http = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
-        base_url=BASE,
-        headers={"access-token": "tok", "client-id": "cid"},
-    )
-    return DhanClient("cid", "tok", http=http, quote_interval=0, data_interval=0)
+    http = httpx.AsyncClient(base_url="https://x/v2", transport=httpx.MockTransport(handler))
+    return DhanClient(CREDENTIALS, http)
 
 
-def ts(day: date) -> int:
-    """Epoch seconds for IST midnight of ``day`` (how Dhan stamps daily candles)."""
-    return int(datetime(day.year, day.month, day.day, tzinfo=IST).timestamp())
+@pytest.fixture(autouse=True)
+def no_throttle(monkeypatch):
+    monkeypatch.setattr(client_module, "MIN_REQUEST_GAP", 0)
 
 
-class TestOhlc:
-    async def test_request_shape_and_parsing(self):
-        seen = {}
+async def test_daily_bars_parse_and_filter_by_ist_date():
+    seen = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["path"] = request.url.path
-            seen["body"] = json.loads(request.content)
-            seen["headers"] = request.headers
-            return httpx.Response(
-                200,
-                json={
-                    "data": {
-                        "NSE_EQ": {
-                            "11536": {"last_price": 4525.55, "ohlc": {"close": 4507.85}},
-                            "2885": {"last_price": 2900.0, "ohlc": {"close": 2890.0}},
-                        }
-                    },
-                    "status": "success",
-                },
-            )
+    def handler(request):
+        seen["headers"] = request.headers
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=HISTORY)
 
-        client = make_client(handler)
-        out = await client.ohlc({"NSE_EQ": [11536, 2885]})
-
-        assert seen["path"] == "/v2/marketfeed/ohlc"
-        assert seen["body"] == {"NSE_EQ": [11536, 2885]}
-        assert seen["headers"]["access-token"] == "tok"
-        assert seen["headers"]["client-id"] == "cid"
-        # String keys in the response become ints
-        assert out["NSE_EQ"][11536]["last_price"] == 4525.55
-        assert out["NSE_EQ"][2885]["ohlc"]["close"] == 2890.0
-
-    async def test_chunks_at_1000_ids(self):
-        sizes = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            ids = json.loads(request.content)["NSE_EQ"]
-            sizes.append(len(ids))
-            return httpx.Response(
-                200,
-                json={"data": {"NSE_EQ": {str(i): {"last_price": 1.0} for i in ids}}},
-            )
-
-        client = make_client(handler)
-        out = await client.ohlc({"NSE_EQ": list(range(2500))})
-
-        assert sizes == [1000, 1000, 500]
-        assert len(out["NSE_EQ"]) == 2500
-
-    async def test_missing_segment_in_response_is_empty(self):
-        client = make_client(lambda r: httpx.Response(200, json={"data": {}, "status": "success"}))
-        assert await client.ohlc({"NSE_EQ": [1]}) == {}
+    bars = await make_client(handler).daily_bars(11536, date(2026, 10, 21), date(2026, 10, 21))
+    assert [(b.day, b.close, b.volume) for b in bars] == [(date(2026, 10, 21), 20.5, 200)]
+    assert seen["headers"]["access-token"] == "secret-token"
+    assert seen["headers"]["client-id"] == "1100"
+    assert seen["body"]["securityId"] == "11536"
+    assert seen["body"]["toDate"] == "2026-10-22"  # non-inclusive, so end + 1 day
 
 
-class TestDailyBars:
-    async def test_request_shape(self):
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["path"] = request.url.path
-            seen["body"] = json.loads(request.content)
-            return httpx.Response(
-                200,
-                json={"open": [], "high": [], "low": [], "close": [], "volume": [], "timestamp": []},
-            )
-
-        client = make_client(handler)
-        await client.daily_bars(11536, "NSE_EQ", date(2026, 10, 1), date(2026, 10, 10))
-
-        assert seen["path"] == "/v2/charts/historical"
-        assert seen["body"] == {
-            "securityId": "11536",  # string, not int
-            "exchangeSegment": "NSE_EQ",
-            "instrument": "EQUITY",
-            "expiryCode": 0,
-            "oi": False,
-            "fromDate": "2026-10-01",
-            "toDate": "2026-10-11",  # non-inclusive, so end + 1 day
-        }
-
-    async def test_parses_columns_and_filters_range(self):
-        days = [date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7)]
-        body = {
-            "open": [10.0, 11.0, 12.0],
-            "high": [11.0, 12.0, 13.0],
-            "low": [9.0, 10.0, 11.0],
-            "close": [10.5, 11.5, 12.5],
-            "volume": [100.0, 200.0, 300.0],
-            "timestamp": [ts(d) for d in days],
-        }
-        client = make_client(lambda r: httpx.Response(200, json=body))
-
-        bars = await client.daily_bars(1, "NSE_EQ", date(2026, 10, 6), date(2026, 10, 7))
-
-        assert [b.date for b in bars] == days[1:]
-        assert bars[0].close == 11.5
-        assert bars[0].volume == 200
-        assert isinstance(bars[0].volume, int)
-
-    async def test_no_data_returns_empty(self):
-        client = make_client(
-            lambda r: httpx.Response(
-                400, json={"errorType": "Data_Error", "errorCode": "DH-907", "errorMessage": "x"}
-            )
-        )
-        assert await client.daily_bars(1, "NSE_EQ", date(2026, 1, 1), date(2026, 1, 2)) == []
+async def test_no_data_error_gives_empty_list():
+    body = {"errorType": "Data_Error", "errorCode": "DH-907", "errorMessage": "no data"}
+    client = make_client(lambda request: httpx.Response(400, json=body))
+    assert await client.daily_bars(1, date(2026, 10, 24), date(2026, 10, 25)) == []
 
 
-class TestErrorMapping:
-    @pytest.mark.parametrize(
-        "status,body",
-        [
-            (401, {"errorType": "Invalid_Authentication", "errorCode": "DH-901", "errorMessage": "bad"}),
-            (401, {"data": {"808": "Authentication Failed"}, "status": "failed"}),
-            (400, {"errorCode": "DH-902", "errorMessage": "no data plan"}),
-            (400, {"data": {"806": "Data APIs not subscribed"}, "status": "failed"}),
-            (403, {}),
-        ],
-    )
-    async def test_auth_errors(self, status, body):
-        client = make_client(lambda r: httpx.Response(status, json=body))
-        with pytest.raises(DhanAuthError):
-            await client.ohlc({"NSE_EQ": [1]})
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (401, {"errorCode": "DH-901", "errorMessage": "bad token"}, AuthenticationError),
+        (401, {"data": {"808": "Authentication Failed"}, "status": "failed"}, AuthenticationError),
+        (400, {"errorCode": "DH-902", "errorMessage": "no data plan"}, AuthenticationError),
+        (429, {"errorCode": "DH-904", "errorMessage": "slow down"}, RateLimitError),
+        (400, {"data": {"805": "Too many requests"}, "status": "failed"}, RateLimitError),
+        (500, {"errorCode": "DH-908", "errorMessage": "server"}, DataUnavailableError),
+        (502, "not json", DataUnavailableError),
+    ],
+)
+async def test_error_mapping(status, body, expected):
+    def handler(request):
+        if isinstance(body, str):
+            return httpx.Response(status, text=body)
+        return httpx.Response(status, json=body)
 
-    @pytest.mark.parametrize(
-        "status,body",
-        [
-            (429, {}),
-            (400, {"errorCode": "DH-904", "errorMessage": "rate"}),
-            (400, {"data": {"805": "Too many requests"}, "status": "failed"}),
-        ],
-    )
-    async def test_rate_limit_errors(self, status, body):
-        client = make_client(lambda r: httpx.Response(status, json=body))
-        with pytest.raises(DhanRateLimited):
-            await client.ohlc({"NSE_EQ": [1]})
-
-    async def test_other_error_keeps_code_and_status(self):
-        client = make_client(
-            lambda r: httpx.Response(
-                400, json={"errorCode": "DH-905", "errorMessage": "securityId is required"}
-            )
-        )
-        with pytest.raises(DhanError) as exc:
-            await client.ohlc({"NSE_EQ": [1]})
-        assert not isinstance(exc.value, (DhanAuthError, DhanRateLimited))
-        assert exc.value.code == "DH-905"
-        assert exc.value.status == 400
-        assert "securityId is required" in str(exc.value)
-
-    async def test_network_error_wrapped(self):
-        def handler(request):
-            raise httpx.ConnectError("boom")
-
-        client = make_client(handler)
-        with pytest.raises(DhanError):
-            await client.ohlc({"NSE_EQ": [1]})
-
-    async def test_invalid_json_success_body(self):
-        client = make_client(lambda r: httpx.Response(200, text="<html>"))
-        with pytest.raises(DhanError):
-            await client.ohlc({"NSE_EQ": [1]})
+    with pytest.raises(expected):
+        await make_client(handler).daily_bars(1, date(2026, 10, 1), date(2026, 10, 2))
 
 
-class TestParseError:
-    def test_non_json_body(self):
-        code, msg = parse_error(httpx.Response(502, text="Bad Gateway"))
-        assert code is None
-        assert msg == "Bad Gateway"
+async def test_network_error_is_data_unavailable():
+    def handler(request):
+        raise httpx.ConnectError("boom")
 
-    def test_trading_style(self):
-        code, msg = parse_error(
-            httpx.Response(400, json={"errorCode": "DH-905", "errorMessage": "m"})
-        )
-        assert (code, msg) == ("DH-905", "m")
-
-    def test_quote_style(self):
-        code, msg = parse_error(
-            httpx.Response(401, json={"data": {"808": "auth"}, "status": "failed"})
-        )
-        assert (code, msg) == ("808", "auth")
-
-    def test_unrecognised_json(self):
-        code, _ = parse_error(httpx.Response(500, json={"foo": "bar"}))
-        assert code is None
+    with pytest.raises(DataUnavailableError):
+        await make_client(handler).daily_bars(1, date(2026, 10, 1), date(2026, 10, 2))
 
 
-class TestThrottle:
-    async def test_spaces_calls(self):
-        gate = Throttle(0.05)
-        start = time.monotonic()
-        await gate.wait()
-        await gate.wait()
-        await gate.wait()
-        assert time.monotonic() - start >= 0.09
-
-    async def test_zero_interval_does_not_delay(self):
-        gate = Throttle(0)
-        start = time.monotonic()
-        for _ in range(5):
-            await gate.wait()
-        assert time.monotonic() - start < 0.05
+async def test_requests_are_spaced(monkeypatch):
+    monkeypatch.setattr(client_module, "MIN_REQUEST_GAP", 0.05)
+    client = make_client(lambda request: httpx.Response(200, json=HISTORY))
+    start = asyncio.get_running_loop().time()
+    for _ in range(3):
+        await client.daily_bars(1, date(2026, 10, 1), date(2026, 10, 30))
+    assert asyncio.get_running_loop().time() - start >= 0.09
 
 
-async def test_aclose():
-    client = make_client(lambda r: httpx.Response(200, json={}))
-    await client.aclose()
+async def test_unrecognised_error_body_is_data_unavailable():
+    client = make_client(lambda request: httpx.Response(400, json={"surprise": True}))
+    with pytest.raises(DataUnavailableError, match="surprise"):
+        await client.daily_bars(1, date(2026, 10, 1), date(2026, 10, 2))
+
+
+async def test_close_closes_the_http_client():
+    client = make_client(lambda request: httpx.Response(200, json=HISTORY))
+    await client.close()
     assert client._http.is_closed
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [{"unexpected": 1}, {"timestamp": [1792521000], "open": []}, "<html>gateway</html>"],
+)
+async def test_malformed_success_reply_is_data_unavailable(reply):
+    def handler(request):
+        if isinstance(reply, str):
+            return httpx.Response(200, text=reply)
+        return httpx.Response(200, json=reply)
+
+    with pytest.raises(DataUnavailableError):
+        await make_client(handler).daily_bars(1, date(2026, 10, 1), date(2026, 10, 30))
