@@ -17,6 +17,8 @@ from .instruments import SEGMENT
 from .packets import Disconnect, Packet, parse_packet
 
 logger = logging.getLogger(__name__)
+# websockets logs the connection URL, which carries the access token, at DEBUG.
+logging.getLogger("websockets").setLevel(logging.INFO)
 
 FEED_URL = "wss://api-feed.dhan.co?version=2&token={token}&clientId={client_id}&authType=2"
 SUBSCRIBE_TICKER = 15

@@ -4,7 +4,7 @@ What FinAlly uses from DhanHQ v2: the **Live Market Feed WebSocket** for real-ti
 
 Companion docs: [MARKET_DATA_DESIGN.md](MARKET_DATA_DESIGN.md) (architecture), [MARKET_INTERFACE.md](MARKET_INTERFACE.md) (the unified Python API), [MARKET_SIMULATOR.md](MARKET_SIMULATOR.md) (the no-token fallback).
 
-Tags: **[VERIFIED]** observed against the live service on 2026-10-22 with a real Data-API-enabled token (market closed, 21:54 to 22:50 IST); **[DOCS]** from the official docs (<https://dhanhq.co/docs/v2/>) or the OpenAPI specs (<https://api.dhan.co/v2/v3/api-docs>); **[UNVERIFIED]** still to be observed during market hours (see section 11).
+Tags: **[VERIFIED]** observed against the live service with a real Data-API-enabled token, on 2026-10-22 (market closed, 21:54 to 22:50 IST) and on 2026-10-26 (**market open**, 11:42 to 11:50 IST); **[DOCS]** from the official docs (<https://dhanhq.co/docs/v2/>) or the OpenAPI specs (<https://api.dhan.co/v2/v3/api-docs>); **[UNVERIFIED]** not yet observed (see section 11).
 
 ---
 
@@ -100,6 +100,12 @@ Prices are float32; the backend rounds to 2 decimals and never compares for equa
 | **The last trade time is IST wall-clock encoded as UTC** | TCS ticker time 1792684492 decodes to `15:54:52 UTC`; the REST quote for the same trade says `22/10/2026 15:54:52` (IST) | The backend ignores the packet timestamp and stamps ticks with receive time |
 | Subscribing returns the last tick immediately | Three instruments returned 6 packets inside one second at 21:54 IST | No REST price seeding is needed; the cache fills within a second of start |
 | After hours the feed is quiet | No packets for 12 s after the initial burst | Silence is not a failure; only repeated connect failures mark the feed unhealthy |
+| **In session, a busy ticker pushes about once per second** | 6-minute run, 10 tickers: median gap 0.90 s for RELIANCE, INFY, ITC, SBIN, TCS (0.8 to 0.9 ticks/s); 6.5 ticks/s overall | The 500 ms SSE cadence repeats the latest value roughly every other event; nothing to tune |
+| **Quiet tickers go silent for long stretches** | ICICIBANK: 34 ticks in 360 s, median gap 6.3 s, max 46 s; HDFCBANK max gap 22.6 s | Gaps over 40 s on one instrument are normal while the connection stays healthy; never time out per ticker |
+| The connection is stable under load | 6 minutes, 2,349 ticks, zero reconnects, `healthy()` true at every minute | |
+| Subscribe latency in session | all 10 tickers had their first price 1.00 s after `start()` | |
+| Runtime changes work in session | `add_ticker("WIPRO")` at 60 s produced 37 ticks; `remove_ticker` at 150 s emptied its cache entry and unsubscribed | |
+| The feed's previous close is the prior session's close | TCS 2530.0 = REST `ohlc.close` in session = the 2026-10-23 bar in history | |
 
 ### 4.5 Disconnect codes
 
@@ -118,12 +124,12 @@ One instrument per call; request body:
 
 Verified behaviour **[VERIFIED]**:
 
-- With `toDate` = tomorrow the response holds **completed sessions only**; the bar for 2026-10-22 was absent at 22:40 IST that day. Days without trading (weekends, 2026-10-20 here) are simply missing.
+- With `toDate` = tomorrow the response holds **completed sessions only**; the bar for 2026-10-22 was absent at 22:40 IST that day, and the bar for 2026-10-26 was absent during the session at 11:42 IST (last bar: 2026-10-23). Days without trading (weekends, 2026-10-20 here) are simply missing.
 - An empty range returns **HTTP 400** with `{"errorType":"Data_Error","errorCode":"DH-907",...}`. The client maps `DH-907` to an empty list.
 
 ## 6. Quote REST (not used by the backend)
 
-`POST /v2/marketfeed/ltp | ohlc | quote` take `{"NSE_EQ": [11536]}` and are limited to 1 request/s **[DOCS]**. They are documented here only because of what was learned **[VERIFIED]**: after the close, `ohlc.close` equals `last_price` (TCS 2506.9) and `net_change` is 0, so **REST cannot provide the previous close reliably**; the WebSocket Previous Close packet can. A second quote call within one second returned `{"data":{"805":"Too many requests..."},"status":"failed"}`.
+`POST /v2/marketfeed/ltp | ohlc | quote` take `{"NSE_EQ": [11536]}` and are limited to 1 request/s **[DOCS]**. They are documented here only because of what was learned **[VERIFIED]**: after the close, `ohlc.close` equals `last_price` (TCS 2506.9) and `net_change` is 0, so **REST cannot provide the previous close reliably**; the WebSocket Previous Close packet can. During the session `ohlc.close` **is** the previous close (TCS 2530.0, `net_change` -7.1 with last 2522.9), but the same field turns into the current price after the close (2506.9 on 2026-10-22), so its meaning depends on the time of day. A second quote call within one second returned **HTTP 429** with `{"data":{"805":"Too many requests. Further requests may result in the user being blocked."},"status":"failed"}`.
 
 ## 7. Errors
 
@@ -158,6 +164,8 @@ Reproducible with the token in `.env` and `backend/`'s code (`DhanDataSource` ag
 4. `daily_bars("TCS", ...)` returned the five completed sessions 2026-10-14 to 2026-10-21; the last close matched the feed's previous close.
 5. A throwaway uvicorn app serving `GET /api/stream/prices` streamed the same data as SSE.
 
+Market-hours run, 2026-10-26 11:43 to 11:49 IST (script not committed; it wraps `DhanDataSource` with a packet spy for 360 s, adds `WIPRO` at 60 s and removes it at 150 s): 2,349 ticks, no reconnects, healthy throughout. Per-ticker rates and gaps are in section 4.4.
+
 ## 10. Quick reference
 
 | Need | Call |
@@ -168,9 +176,9 @@ Reproducible with the token in `.env` and `backend/`'s code (`DhanDataSource` ag
 | Daily candles | `POST /v2/charts/historical`, one id per call, 5 calls/s |
 | Token check | `GET /v2/profile` |
 
-## 11. Not yet verified (needs the market open)
+## 11. Still not verified
 
-1. Tick cadence and whether every trade produces a Ticker packet.
-2. That the server keeps a quiet connection alive past 40 s during the session (the client answers pings, so this is expected).
-3. HTTP status code Dhan uses for rate limiting (the body shape is verified).
-4. Behaviour when more than one connection is opened with the same token (`805`).
+1. **Hours-long sessions**: the longest live run is 6 minutes; behaviour over a full 09:15 to 15:30 session, and across the open and close, has not been observed.
+2. **Connection limits**: a second connection with the same token (allowed up to 5 by the docs) and the `805` disconnect when exceeding it were deliberately not tested, because Dhan warns that repeated violations can block the user.
+3. **A fully idle connection**: a market-wide quiet period (for example the pre-open or a holiday) with the connection open for more than 40 s was not observed; the client library answers pings, so no problem is expected.
+4. **Market status packet and token expiry mid-session**: not triggered (token expiry produces disconnect `807` per the docs).

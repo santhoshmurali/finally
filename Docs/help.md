@@ -6,7 +6,7 @@ All Python commands use `uv`. Run them from `backend/`.
 
 ```bash
 cd backend
-uv run pytest                      # 124 tests
+uv run pytest                      # 125 tests
 uv run pytest --cov=app            # coverage (100%)
 uv run ruff check app tests        # lint
 ```

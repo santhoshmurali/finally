@@ -490,13 +490,13 @@ _Expected colors, status codes, and response shapes are to be specified during i
 
 ## 13. Implementation Status
 
-_Last updated 2026-10-22. Update this table whenever a component changes state._
+_Last updated 2026-10-26. Update this table whenever a component changes state._
 
 | Component | Status | Where | Evidence |
 |---|---|---|---|
-| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 124 unit tests, 100% line coverage |
+| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 125 unit tests, 100% line coverage |
 | Market data: simulator (GBM, correlation, events, synthetic history) | **Done** | `simulator.py`, `seed_prices.py`, `synthetic_history.py` | unit tests incl. statistical checks; ran under uvicorn |
-| Market data: Dhan live source (WebSocket feed, instrument resolver, REST history) | **Done** | `backend/app/market/dhan/` | unit tests with a scripted fake socket; verified against the real service with a real token (DHANHQ_API.md section 9) |
+| Market data: Dhan live source (WebSocket feed, instrument resolver, REST history) | **Done** | `backend/app/market/dhan/` | unit tests with a scripted fake socket; verified against the real service with a real token, after hours and during market hours (DHANHQ_API.md section 9) |
 | Market data: SSE endpoint `GET /api/stream/prices` | **Done** | `stream.py` | unit tests; streamed from uvicorn with Dhan data and with the simulator |
 | Market data docs | **Done** | `planning/DHANHQ_API.md`, `MARKET_DATA_DESIGN.md`, `MARKET_INTERFACE.md`, `MARKET_SIMULATOR.md` | rewritten to match the code |
 | Database (SQLite schema, seed, lazy init) | Not started | `backend/db/` | |
@@ -518,7 +518,7 @@ _Last updated 2026-10-22. Update this table whenever a component changes state._
 
 ### Known limits and open items
 
-- Dhan behaviour during market hours (tick cadence, long-session keep-alive) has not been observed yet; the checks so far ran after the close (DHANHQ_API.md section 11).
+- Dhan was observed during market hours for 6 minutes only (about 1 tick/s per busy ticker, stable connection, no reconnects). Full-session behaviour is unobserved (DHANHQ_API.md section 11).
 - Dhan tokens last 24 hours and are not renewed automatically; an expired token makes the source unhealthy until a new token is configured and the app restarted (MARKET_DATA_DESIGN.md section 6).
 - The simulator has no market calendar or holiday awareness.
 

@@ -228,3 +228,11 @@ async def test_subscribe_on_a_dropped_socket_keeps_the_id_for_reconnect():
     feed._ws = DeadSocket()
     await feed.subscribe([5])
     assert 5 in feed._security_ids
+
+
+def test_websockets_debug_logging_cannot_leak_the_token(caplog):
+    """websockets logs the connection URL (with the token) at DEBUG, even if the app sets DEBUG."""
+    import logging
+
+    caplog.set_level(logging.DEBUG)  # what an app enabling debug logging does to the root logger
+    assert logging.getLogger("websockets").getEffectiveLevel() >= logging.INFO

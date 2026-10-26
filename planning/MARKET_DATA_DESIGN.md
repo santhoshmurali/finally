@@ -73,7 +73,7 @@ Related: [MARKET_INTERFACE.md](MARKET_INTERFACE.md) (the API), [DHANHQ_API.md](D
 | Fatal auth | disconnect packet 806 to 809 stops the loop and sets `error`; no retry | `test_auth_disconnect_is_fatal` |
 | Other disconnects | e.g. 805: reconnect with backoff | `test_other_disconnect_reconnects` |
 | Token expiry | checked before every connect attempt; expired means stop with `AuthenticationError` | `test_expired_token_stops_without_connecting` |
-| Secrets | the URL contains the token; it is never logged (only the exception class name is) | |
+| Secrets | the URL contains the token; the feed logs only the exception class name, and pins the `websockets` logger to INFO because that library logs the full URL, token included, at DEBUG | `test_websockets_debug_logging_cannot_leak_the_token` |
 | Bad frames | an undecodable packet is logged and skipped; an exception in the packet handler is logged and the feed keeps running | `test_undecodable_frames_are_skipped`, `test_failing_callback_does_not_kill_the_feed` |
 | Subscribe on a dropped socket | ignored; the id is already tracked and is resubscribed on reconnect | `test_subscribe_on_a_dropped_socket_keeps_the_id_for_reconnect` |
 | Quiet market | silence is not a failure; there is no inactivity timeout | |
@@ -114,7 +114,7 @@ Dhan tokens last 24 hours. When one expires the source goes unhealthy (feed stop
 
 ## 7. Testing
 
-`cd backend && uv run pytest` runs 124 tests, **100% line coverage** (`--cov=app`), also green on Python 3.12 (the Docker runtime) and 3.14. `uv run ruff check app tests` is clean.
+`cd backend && uv run pytest` runs 125 tests, **100% line coverage** (`--cov=app`), also green on Python 3.12 (the Docker runtime) and 3.14. `uv run ruff check app tests` is clean.
 
 | Test file | Covers |
 |---|---|
@@ -129,7 +129,7 @@ Dhan tokens last 24 hours. When one expires the source goes unhealthy (feed stop
 | `test_synthetic_history.py` | anchoring, weekdays, range independence |
 | `test_factory_stream.py` | source selection, SSE framing and change detection |
 
-Real-service checks (not part of CI because they need a token and network) are recorded in DHANHQ_API.md section 9.
+Real-service checks (not part of CI because they need a token and network) are recorded in DHANHQ_API.md section 9, including a 6-minute run during market hours.
 
 ## 8. Defects found by testing, and fixed
 
@@ -141,6 +141,7 @@ Real-service checks (not part of CI because they need a token and network) are r
 | SSE test hung | `httpx.ASGITransport` buffers whole responses | test the route function directly; verify streaming against uvicorn |
 | Code review: server disconnects reset the backoff, so the feed would reconnect every second and look healthy | review of the feed | only real data counts as received |
 | Code review: one undecodable frame or a raising handler would kill the feed task | review of the feed | log and skip; regression tests |
+| Raw access token written to the logs when an app sets DEBUG (`websockets` logs the connection URL) | live check with the root logger at DEBUG: 1 log line contained the token | `websockets` logger pinned to INFO; 0 lines afterwards, regression test |
 | Code review: malformed Dhan replies leaked `KeyError`/`JSONDecodeError`; a non-object JWT payload leaked `TypeError`; `uvicorn` was missing | review | mapped to `DataUnavailableError` / `AuthenticationError`; dependency added |
 
 ## 9. Not built, on purpose
