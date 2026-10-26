@@ -88,7 +88,7 @@ Related: [MARKET_INTERFACE.md](MARKET_INTERFACE.md) (the API), [DHANHQ_API.md](D
 
 `.env.example` documents them; `.env` is gitignored. The token is a secret: `Credentials.__repr__` omits it and logs never include the feed URL.
 
-Dependencies (`backend/pyproject.toml`, locked in `uv.lock`): `httpx`, `websockets`, `numpy`, `fastapi`, `uvicorn` (the server PLAN section 11 runs); dev: `pytest`, `pytest-asyncio`, `pytest-cov`, `ruff`. Egress needed for Dhan: `api.dhan.co`, `api-feed.dhan.co`, and `s3.ap-south-1.amazonaws.com` (the instrument list redirect).
+Dependencies (`backend/pyproject.toml`, locked in `uv.lock`): `httpx`, `websockets`, `numpy`, `fastapi`, `uvicorn` (the server PLAN section 11 runs); `prompt-toolkit` in the `demo` group (a default group, like `dev`; leave both out of the production image); dev: `pytest`, `pytest-asyncio`, `pytest-cov`, `ruff`. Egress needed for Dhan: `api.dhan.co`, `api-feed.dhan.co`, and `s3.ap-south-1.amazonaws.com` (the instrument list redirect).
 
 ## 5. Failure matrix
 
@@ -114,7 +114,7 @@ Dhan tokens last 24 hours. When one expires the source goes unhealthy (feed stop
 
 ## 7. Testing
 
-`cd backend && uv run pytest` runs 125 tests, **100% line coverage** (`--cov=app`), also green on Python 3.12 (the Docker runtime) and 3.14. `uv run ruff check app tests` is clean.
+`cd backend && uv run pytest` runs 163 tests (125 for `app/market`, 38 for the console demo), **100% line coverage of `app/`** (`--cov=app`), also green on Python 3.12 (the Docker runtime) and 3.14. `uv run ruff check app tests demo` is clean.
 
 | Test file | Covers |
 |---|---|
@@ -144,7 +144,25 @@ Real-service checks (not part of CI because they need a token and network) are r
 | Raw access token written to the logs when an app sets DEBUG (`websockets` logs the connection URL) | live check with the root logger at DEBUG: 1 log line contained the token | `websockets` logger pinned to INFO; 0 lines afterwards, regression test |
 | Code review: malformed Dhan replies leaked `KeyError`/`JSONDecodeError`; a non-object JWT payload leaked `TypeError`; `uvicorn` was missing | review | mapped to `DataUnavailableError` / `AuthenticationError`; dependency added |
 
-## 9. Not built, on purpose
+## 9. Console demo (`backend/demo/`)
+
+A way to watch the feed live without the rest of the platform. Run `uv run python -m demo` (see Docs/help.md). It is a client of the public API only: `create_market_source`, `PriceCache`, `add_ticker` / `remove_ticker`.
+
+| Module | Role |
+|---|---|
+| `demo/render.py` | pure functions: block-character `sparkline`, `PriceHistory` (fixed window per symbol), `build_rows`, `table_fragments`, `parse_command` |
+| `demo/live_console.py` | `Demo` (watchlist state and commands), the full-screen `prompt_toolkit` app, a headless `--plain N` runner, the CLI |
+
+Design points:
+
+- **Chart points are sampled once per interval (default 1 s)** from the cache, not per tick, so all symbols scroll at the same speed and a quiet stock shows a flat line instead of stalling. The window is 40 points by default.
+- **The vertical scale is the window's low to high**, widened to at least 0.05% of the price so one 0.05 tick does not look like a crash.
+- **The UPDATED column is the receive time of the last tick**, which makes stale (quiet or closed-market) symbols visible.
+- Default watchlist is `DEFAULT_WATCHLIST`. An expired token stops the demo with a message; there is no simulator fallback (`--simulator` is explicit).
+- The full-screen view needs a real Windows console (PowerShell, cmd, Windows Terminal); in other shells `--plain` works and a clear message is printed instead of a stack trace.
+- Tests: pure helpers directly, the app through typed input (`create_pipe_input`), and the CLI paths (headless run, expired token, wrong terminal).
+
+## 10. Not built, on purpose
 
 - Dhan Quote/Full packets, market depth, OI: FinAlly needs price and previous close.
 - Multiple WebSocket connections (one handles 5,000 instruments).

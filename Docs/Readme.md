@@ -7,11 +7,20 @@ AI trading workstation for Indian markets (NSE, INR). Full specification: [plann
 | Area | State |
 |---|---|
 | Market data backend (Dhan WebSocket feed, simulator, unified interface, SSE stream) | Done, tested |
+| Console demo: live table with per-symbol line charts (`uv run python -m demo`) | Done, tested |
 | Database, portfolio/trade/watchlist APIs, LLM chat, frontend, Docker, E2E | Not started |
 
 ## Market data in one paragraph
 
 `backend/app/market/` exposes one interface, `MarketDataSource`, with two implementations. With `DHAN_ACESS_TOKEN` set it streams live NSE prices from the DhanHQ Live Market Feed WebSocket; otherwise it runs a GBM simulator. Both write to a `PriceCache` that feeds `GET /api/stream/prices` (SSE).
+
+## Quick start
+
+```bash
+cd backend
+uv run pytest                       # 163 tests
+uv run python -m demo               # live NSE watchlist in the console (add --simulator for no token)
+```
 
 ## Where to read more
 

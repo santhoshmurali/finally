@@ -6,7 +6,7 @@ All Python commands use `uv`. Run them from `backend/`.
 
 ```bash
 cd backend
-uv run pytest                      # 125 tests
+uv run pytest                      # 163 tests (125 market data + 38 demo)
 uv run pytest --cov=app            # coverage (100%)
 uv run ruff check app tests        # lint
 ```
@@ -33,7 +33,7 @@ Notes:
 
 ## Try the market data (simulator)
 
-No token needed. Create a tiny app (for example `demo.py`) that wires the pieces:
+No token needed. Create a tiny app in `backend/stream_app.py` (not `demo.py`, which would clash with the `demo` package) that wires the pieces:
 
 ```python
 from contextlib import asynccontextmanager
@@ -54,7 +54,7 @@ app.include_router(create_stream_router(cache))
 ```
 
 ```bash
-uv run --with uvicorn uvicorn demo:app --port 8000
+uv run --with uvicorn uvicorn stream_app:app --port 8000
 curl -N localhost:8000/api/stream/prices
 ```
 
@@ -62,7 +62,7 @@ curl -N localhost:8000/api/stream/prices
 
 1. Generate an access token: web.dhan.co, My Profile, *Access DhanHQ APIs* (valid 24 h; needs the Data API plan).
 2. Put it in the project `.env` as `DHAN_ACESS_TOKEN=...` (quotes are fine).
-3. Start the same app with the variables loaded: `uv run --with uvicorn --env-file ../.env uvicorn demo:app --port 8000`. The stream now carries live NSE prices (outside market hours: the last price and previous close, then quiet). Health checks use `source.healthy()`.
+3. Start the same app with the variables loaded: `uv run --with uvicorn --env-file ../.env uvicorn stream_app:app --port 8000`. The stream now carries live NSE prices (outside market hours: the last price and previous close, then quiet). Health checks use `source.healthy()`.
 4. When the token expires the source turns unhealthy: generate a new token and restart.
 
 ## Lessons learnt

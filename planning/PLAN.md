@@ -98,6 +98,8 @@ The user runs a single Docker command (or a provided start script). The user ope
 finally/
 ├── frontend/                 # Next.js TypeScript project (static export)
 ├── backend/                  # FastAPI uv project (Python)
+│   ├── app/market/           # Market data (built): Dhan feed, simulator, SSE stream
+│   ├── demo/                 # Console demo: uv run python -m demo
 │   └── db/                   # Schema definitions, seed data, migration logic
 ├── planning/                 # Project-wide documentation for agents
 │   ├── PLAN.md               # This document
@@ -494,7 +496,7 @@ _Last updated 2026-10-26. Update this table whenever a component changes state._
 
 | Component | Status | Where | Evidence |
 |---|---|---|---|
-| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 125 market data unit tests, 100% line coverage |
+| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 125 market data unit tests, 100% line coverage of `app/` (163 backend tests in total with the demo) |
 | Market data: simulator (GBM, correlation, events, synthetic history) | **Done** | `simulator.py`, `seed_prices.py`, `synthetic_history.py` | unit tests incl. statistical checks; ran under uvicorn |
 | Market data: Dhan live source (WebSocket feed, instrument resolver, REST history) | **Done** | `backend/app/market/dhan/` | unit tests with a scripted fake socket; verified against the real service with a real token, after hours and during market hours (DHANHQ_API.md section 9) |
 | Market data: SSE endpoint `GET /api/stream/prices` | **Done** | `stream.py` | unit tests; streamed from uvicorn with Dhan data and with the simulator |
@@ -522,4 +524,5 @@ _Last updated 2026-10-26. Update this table whenever a component changes state._
 - Dhan was observed during market hours for 6 minutes only (about 1 tick/s per busy ticker, stable connection, no reconnects). Full-session behaviour is unobserved (DHANHQ_API.md section 11).
 - Dhan tokens last 24 hours and are not renewed automatically; an expired token makes the source unhealthy until a new token is configured and the app restarted (MARKET_DATA_DESIGN.md section 6).
 - The simulator has no market calendar or holiday awareness.
+- The console demo's full-screen view needs a real Windows console (PowerShell, cmd, Windows Terminal); it was verified through typed-input tests and a headless run against live Dhan data, not by eye on every terminal. `prompt-toolkit` is a default dependency group, so the production image must be built without the `dev` and `demo` groups.
 
