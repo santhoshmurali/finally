@@ -11,6 +11,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+demo = [
+    "prompt-toolkit>=3.0.53",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -27,3 +30,6 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.uv]
+default-groups = ["dev", "demo"]

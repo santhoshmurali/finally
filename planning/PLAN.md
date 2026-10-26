@@ -494,10 +494,11 @@ _Last updated 2026-10-26. Update this table whenever a component changes state._
 
 | Component | Status | Where | Evidence |
 |---|---|---|---|
-| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 125 unit tests, 100% line coverage |
+| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 125 market data unit tests, 100% line coverage |
 | Market data: simulator (GBM, correlation, events, synthetic history) | **Done** | `simulator.py`, `seed_prices.py`, `synthetic_history.py` | unit tests incl. statistical checks; ran under uvicorn |
 | Market data: Dhan live source (WebSocket feed, instrument resolver, REST history) | **Done** | `backend/app/market/dhan/` | unit tests with a scripted fake socket; verified against the real service with a real token, after hours and during market hours (DHANHQ_API.md section 9) |
 | Market data: SSE endpoint `GET /api/stream/prices` | **Done** | `stream.py` | unit tests; streamed from uvicorn with Dhan data and with the simulator |
+| Console demo (`uv run python -m demo`): live table and per-symbol line charts, add/remove symbols | **Done** | `backend/demo/` | 38 unit tests incl. typed-input run of the real app; headless run against live Dhan |
 | Market data docs | **Done** | `planning/DHANHQ_API.md`, `MARKET_DATA_DESIGN.md`, `MARKET_INTERFACE.md`, `MARKET_SIMULATOR.md` | rewritten to match the code |
 | Database (SQLite schema, seed, lazy init) | Not started | `backend/db/` | |
 | Portfolio and trade API, watchlist API, snapshots task | Not started | | |

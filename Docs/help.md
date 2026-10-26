@@ -11,6 +11,26 @@ uv run pytest --cov=app            # coverage (100%)
 uv run ruff check app tests        # lint
 ```
 
+## Live console demo
+
+A terminal watchlist that shows prices updating live: symbol, last traded price, % change vs the previous close, the time of the last tick, and a line chart of the last 40 seconds per symbol (one block character per second, newest on the right, green when the window is rising, red when falling).
+
+```bash
+cd backend
+uv run python -m demo                  # live Dhan data (token read from ../.env)
+uv run python -m demo --simulator      # built-in simulator, no token needed
+uv run python -m demo --plain 10       # no full-screen UI: print the table for 10 s
+```
+
+Default watchlist: the ten largest NIFTY 50 stocks already used by the backend (RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK, SBIN, BHARTIARTL, ITC, LT, HINDUNILVR).
+
+In the input line at the bottom: `tcs` or `add TCS` adds a symbol (Dhan accepts NSE equities only and tells you otherwise), `rm TCS` removes it, `quit` or Ctrl-C exits. Options: `--window 60` (chart width), `--interval 0.5` (seconds per chart point).
+
+Notes:
+- Run it in PowerShell, cmd or Windows Terminal. Git Bash cannot host the full-screen view; use `--plain` there.
+- Outside NSE hours (09:15 to 15:30 IST) Dhan prices do not move, so only the UPDATED column and the simulator show motion. The UPDATED column is the time of the last tick, so quiet stocks visibly go stale between trades.
+- An expired Dhan token stops the demo with a message (it does not silently fall back to the simulator); generate a new token or add `--simulator`.
+
 ## Try the market data (simulator)
 
 No token needed. Create a tiny app (for example `demo.py`) that wires the pieces:
