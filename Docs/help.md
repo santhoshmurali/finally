@@ -6,10 +6,29 @@ All Python commands use `uv`. Run them from `backend/`.
 
 ```bash
 cd backend
-uv run pytest                      # 163 tests (125 market data + 38 demo)
-uv run pytest --cov=app            # coverage (100%)
-uv run ruff check app tests        # lint
+uv run pytest                      # 252 tests (market, db, services, API, LLM, demo)
+uv run ruff check app db tests     # lint
+
+cd ../frontend
+npm test                           # 49 Vitest tests
+npm run build                      # static export to frontend/out
+
+cd ../test
+npx playwright test                # 10 E2E tests (starts the backend with the simulator and mock LLM)
 ```
+
+## Run the app
+
+```bash
+cd backend
+uv run uvicorn app.main:app --port 8000   # serves the API, and the UI when frontend/out exists
+```
+
+Open http://localhost:8000. The UI uses the simulator when `DHAN_ACESS_TOKEN` is empty, and the mock LLM when `LLM_MOCK=true`.
+
+With Docker (Windows, verified): `scripts/start_windows.ps1` builds the image if needed, starts the container, and waits until it is running. If the container exits at startup, the script prints the last log lines and exits 1. `scripts/stop_windows.ps1` removes the container and the `finally` image, and keeps the `finally-data` volume. Base images (`python`, `node`, `uv`, `playwright`) are kept for reuse. The macOS scripts are not part of testing.
+
+Before starting, check `.env`: each key name must be exact, with no space before `=`. A Dhan token lasts 24 hours. When it expires, the app exits at startup with `Dhan access token has expired`, so either generate a new token or clear `DHAN_ACESS_TOKEN` to use the simulator.
 
 ## Live console demo
 
@@ -31,39 +50,23 @@ Notes:
 - Outside NSE hours (09:15 to 15:30 IST) Dhan prices do not move, so only the UPDATED column and the simulator show motion. The UPDATED column is the time of the last tick, so quiet stocks visibly go stale between trades.
 - An expired Dhan token stops the demo with a message (it does not silently fall back to the simulator); generate a new token or add `--simulator`.
 
-## Try the market data (simulator)
+## Try the app with the simulator
 
-No token needed. Create a tiny app in `backend/stream_app.py` (not `demo.py`, which would clash with the `demo` package) that wires the pieces:
-
-```python
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from app.market import DEFAULT_WATCHLIST, PriceCache, create_market_source, create_stream_router
-
-cache = PriceCache()
-source = create_market_source(cache)
-
-@asynccontextmanager
-async def lifespan(app):
-    await source.start(DEFAULT_WATCHLIST)
-    yield
-    await source.stop()
-
-app = FastAPI(lifespan=lifespan)
-app.include_router(create_stream_router(cache))
-```
+No token needed. The app uses the simulator whenever `DHAN_ACESS_TOKEN` is empty.
 
 ```bash
-uv run --with uvicorn uvicorn stream_app:app --port 8000
-curl -N localhost:8000/api/stream/prices
+cd backend
+uv run uvicorn app.main:app --port 8000
+curl -N localhost:8000/api/stream/prices     # live price events
+curl localhost:8000/api/health               # {"status":"ok","market_source":"simulator",...}
 ```
 
 ## Use live Dhan data
 
 1. Generate an access token: web.dhan.co, My Profile, *Access DhanHQ APIs* (valid 24 h; needs the Data API plan).
 2. Put it in the project `.env` as `DHAN_ACESS_TOKEN=...` (quotes are fine).
-3. Start the same app with the variables loaded: `uv run --with uvicorn --env-file ../.env uvicorn stream_app:app --port 8000`. The stream now carries live NSE prices (outside market hours: the last price and previous close, then quiet). Health checks use `source.healthy()`.
-4. When the token expires the source turns unhealthy: generate a new token and restart.
+3. Start the app with the variables loaded: `uv run --env-file ../.env uvicorn app.main:app --port 8000`, or use the Docker scripts. The stream carries live NSE prices (outside market hours: the last price and previous close, then quiet). `/api/health` reports `market_source: dhan`.
+4. When the token expires the app refuses to start, so generate a new token and restart.
 
 ## Lessons learnt
 
@@ -73,3 +76,11 @@ curl -N localhost:8000/api/stream/prices
 - **Test endless streams without `httpx.ASGITransport`.** It buffers the whole response, so an SSE test hangs forever. Test the route function, and verify real streaming against uvicorn.
 - **Check determinism across ranges.** A history bar whose open depended on the requested range slipped through until a wide-vs-narrow test.
 - **Bash heredocs choke on very long commands on Windows.** Write files with the editor tool.
+- **A hidden error hid the real bug.** `start_windows.ps1` sent its `docker run` error to `$null`, and the message blamed port 8000. The real cause was a missing image name. Do not hide stderr in scripts.
+- **Spaces in `.env` keys.** `DHAN_ACESS_TOKEN ` (with a space before `=`) was rejected by Docker. Check key names exactly.
+- **Expired token fails loudly.** A 24-hour Dhan token that expired makes the app exit at startup. The start script now checks the container and exits 1 with the log lines, so this does not look like a success.
+- **Chromium upgrades single-label hosts to HTTPS.** The E2E container could not reach `http://app:8000`, because Chromium's HSTS preload treats the `.app` TLD as HTTPS-only. The compose file uses the alias `finally.internal`.
+- **Named volumes shadow directories.** Mounting `finally-data` at `/app/db` hides anything in `/app/db` in the image. The backend code sits at `/app/backend`, and the database volume at `/app/db`.
+- **Flaky PyPI downloads break image builds.** Four of ten downloads of the same wheel were cut short. The Dockerfile sets `UV_HTTP_RETRIES=10` and `UV_HTTP_TIMEOUT=120`.
+- **Route interception after the stream opens never fires.** A Playwright `page.route` set up after the page opened its SSE stream never sees the stream fail. Install the route before `page.goto`.
+- **Parallel frontend work drifts from the test hooks.** Hook names built from memory did not match the E2E specs. Keep the hook table in `planning/TEAM_CONTRACT.md` as the single source, and check the built bundle for the names.

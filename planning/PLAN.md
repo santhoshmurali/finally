@@ -492,7 +492,7 @@ _Expected colors, status codes, and response shapes are to be specified during i
 
 ## 13. Implementation Status
 
-_Last updated 2026-10-26. Update this table whenever a component changes state._
+_Last updated 2026-10-27. Update this table whenever a component changes state._
 
 | Component | Status | Where | Evidence |
 |---|---|---|---|
@@ -502,14 +502,14 @@ _Last updated 2026-10-26. Update this table whenever a component changes state._
 | Market data: SSE endpoint `GET /api/stream/prices` | **Done** | `stream.py` | unit tests; streamed from uvicorn with Dhan data and with the simulator |
 | Console demo (`uv run python -m demo`): live table and per-symbol line charts, add/remove symbols | **Done** | `backend/demo/` | 38 unit tests incl. typed-input run of the real app; headless run against live Dhan |
 | Market data docs | **Done** | `planning/DHANHQ_API.md`, `MARKET_DATA_DESIGN.md`, `MARKET_INTERFACE.md`, `MARKET_SIMULATOR.md` | rewritten to match the code |
-| Database (SQLite schema, seed, lazy init) | Not started | `backend/db/` | |
-| Portfolio and trade API, watchlist API, snapshots task | Not started | | |
-| `/api/health` (should report `source.healthy()`) | Not started | | |
-| LLM chat integration and mock mode | Not started | | |
-| FastAPI app wiring (lifespan, static files) | Not started | | |
-| Frontend (Next.js) | Not started | `frontend/` | |
-| Dockerfile, start/stop scripts | Not started | | |
-| Playwright E2E tests | Not started | `test/` | |
+| Database (SQLite schema, seed, lazy init) | **Done** | `backend/db/` | 26 db tests; seeds only when the profile is missing |
+| Portfolio and trade API, watchlist API, snapshots task | **Done** | `backend/app/services/`, `backend/app/api/` | 33 service and API tests; trades, P&L, watchlist rules, 30 s snapshots |
+| `/api/health` (reports `source.healthy()`) | **Done** | `backend/app/api/health.py` | API test; checked live under uvicorn |
+| LLM chat integration and mock mode | **Done** | `backend/app/llm/`, `backend/app/api/chat.py` | 29 LLM tests; mock path used by E2E. Live OpenRouter call verified: structured reply parsed |
+| FastAPI app wiring (lifespan, static files) | **Done** | `backend/app/main.py` | static export mounted when `FINALLY_STATIC_DIR` exists |
+| Frontend (Next.js) | **Done** | `frontend/` | 49 Vitest tests; static build; hooks per TEAM_CONTRACT section 6 |
+| Dockerfile, start/stop scripts | **Done** (Windows verified; macOS scripts not in testing) | `Dockerfile`, `scripts/`, `docker-compose.yml` | clean Windows test: start builds and reports healthy on the live Dhan feed; stop removes the container and image and keeps `finally-data`. uv retry and timeout settings added for flaky PyPI downloads |
+| Playwright E2E tests | **Done** | `test/` | 10 tests in 6 specs: 10/10 locally and 10/10 in the container on the current build |
 
 ### Market data: contract for the next components
 

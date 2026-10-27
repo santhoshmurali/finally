@@ -7,7 +7,7 @@ Built entirely by coding agents as a capstone project for an agentic AI coding c
 ## Features
 
 - **Live price streaming** via SSE with green/red flash animations
-- **Simulated portfolio** — $10k virtual cash, market orders, instant fills
+- **Simulated portfolio** — ₹10,00,000 virtual cash, NSE stocks, market orders, instant fills
 - **Portfolio visualizations** — heatmap (treemap), P&L chart, positions table
 - **AI chat assistant** — analyzes holdings, suggests and auto-executes trades
 - **Watchlist management** — track tickers manually or via AI
@@ -20,29 +20,42 @@ Single Docker container serving everything on port 8000:
 - **Frontend**: Next.js (static export) with TypeScript and Tailwind CSS
 - **Backend**: FastAPI (Python/uv) with SSE streaming
 - **Database**: SQLite with lazy initialization
-- **AI**: LiteLLM → OpenRouter (Cerebras inference; CoreWeave as an alternate provider) with structured outputs
-- **Market data**: Built-in GBM simulator (default) or Massive API (optional)
+- **AI**: LiteLLM → OpenRouter (Cerebras inference) with structured outputs
+- **Market data**: Built-in GBM simulator (default) or live NSE prices from the DhanHQ WebSocket feed (when a Dhan token is set)
 
 ## Quick Start
 
-```bash
-# Clone and configure
-cp .env.example .env
-# Add your OPENROUTER_API_KEY to .env
+Windows (PowerShell), with Docker Desktop running:
 
-# Run with Docker
-docker build -t finally .
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
+```powershell
+# Configure
+copy .env.example .env
+# Add OPENROUTER_API_KEY and, optionally, DHAN_ACESS_TOKEN to .env
+
+# Start (builds the image if needed) and stop (removes the container and image, keeps data)
+.\scripts\start_windows.ps1
+.\scripts\stop_windows.ps1
 
 # Open http://localhost:8000
 ```
+
+Local development (no Docker):
+
+```bash
+cd backend
+uv run --env-file ../.env uvicorn app.main:app --port 8000
+```
+
+See [Docs/help.md](Docs/help.md) for tests, the console demo and lessons learnt.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key for AI chat |
-| `MASSIVE_API_KEY` | No | Massive (Polygon.io) key for real market data; omit to use simulator |
+| `OPENROUTER_API_KEY` | For live chat | OpenRouter API key for AI chat |
+| `DHAN_ACESS_TOKEN` | No | DhanHQ access token for live NSE prices; empty uses the simulator. Expires after 24 hours |
+| `DHAN_CLIENT_ID` | No | Overrides the client ID inside the Dhan token |
+| `MARKET_SEED` | No | Integer that makes the simulator reproducible |
 | `LLM_MOCK` | No | Set `true` for deterministic mock LLM responses (testing) |
 
 ## Project Structure
@@ -50,11 +63,12 @@ docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
 ```
 finally/
 ├── frontend/    # Next.js static export
-├── backend/     # FastAPI uv project
+├── backend/     # FastAPI uv project (app/, db/, demo/, tests/)
 ├── planning/    # Project documentation and agent contracts
+├── Docs/        # Readme and help (tutorials and lessons learnt)
 ├── test/        # Playwright E2E tests
-├── db/          # SQLite volume mount (runtime)
-└── scripts/     # Start/stop helpers
+├── scripts/     # Start/stop scripts (Windows verified; macOS not in testing)
+└── Dockerfile   # Multi-stage build: Node builds the UI, Python serves it
 ```
 
 ## License

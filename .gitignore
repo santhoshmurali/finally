@@ -208,3 +208,7 @@ __marimo__/
 
 # Internal task tracker
 Tasktrackr.md
+
+# FinAlly runtime data (SQLite)
+finally.db
+*.db

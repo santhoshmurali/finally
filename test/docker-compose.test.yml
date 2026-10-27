@@ -1,0 +1,34 @@
+# E2E stack: the app image on the simulator with the mock LLM, plus a Playwright runner.
+# Run from the repository root: docker compose -f test/docker-compose.test.yml up --build --exit-code-from playwright
+# /app/db is tmpfs, so every run starts from a fresh, seeded database and never touches finally-data.
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: finally-test
+    environment:
+      DHAN_ACESS_TOKEN: ""
+      MARKET_SEED: "42"
+      LLM_MOCK: "true"
+    tmpfs:
+      - /app/db
+    # Chromium upgrades the single-label host "app" to HTTPS (HSTS preload of the .app TLD),
+    # so the browser uses this alias instead.
+    networks:
+      default:
+        aliases:
+          - finally.internal
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.64.1-noble
+    working_dir: /app/test
+    command: sh -c "npm ci && npx playwright test"
+    environment:
+      BASE_URL: http://finally.internal:8000
+    volumes:
+      - ./:/app/test
+      - /app/test/node_modules
+    depends_on:
+      app:
+        condition: service_healthy

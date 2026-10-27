@@ -8,7 +8,8 @@ AI trading workstation for Indian markets (NSE, INR). Full specification: [plann
 |---|---|
 | Market data backend (Dhan WebSocket feed, simulator, unified interface, SSE stream) | Done, tested |
 | Console demo: live table with per-symbol line charts (`uv run python -m demo`) | Done, tested |
-| Database, portfolio/trade/watchlist APIs, LLM chat, frontend, Docker, E2E | Not started |
+| Database, portfolio/trade/watchlist APIs, LLM chat (mock mode), frontend, Docker, E2E | Done, tested: backend 252, frontend 49, E2E 10/10 locally and in the container |
+| Docker | `scripts/start_windows.ps1` and `scripts/stop_windows.ps1` verified from a clean state: start builds and reports healthy, stop removes the container and image and keeps `finally-data`. The macOS scripts are not part of testing |
 
 ## Market data in one paragraph
 
