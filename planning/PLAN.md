@@ -492,24 +492,25 @@ _Expected colors, status codes, and response shapes are to be specified during i
 
 ## 13. Implementation Status
 
-_Last updated 2026-10-26. Update this table whenever a component changes state._
+_Last updated 2026-11-02. Update this table whenever a component changes state._
 
 | Component | Status | Where | Evidence |
 |---|---|---|---|
-| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 125 market data unit tests, 100% line coverage of `app/` (163 backend tests in total with the demo) |
+| Market data: unified interface, price cache, errors | **Done** | `backend/app/market/` | 125 market data unit tests, 100% line coverage of `app/` (226 backend tests in total as of 2026-11-02, including the demo) |
 | Market data: simulator (GBM, correlation, events, synthetic history) | **Done** | `simulator.py`, `seed_prices.py`, `synthetic_history.py` | unit tests incl. statistical checks; ran under uvicorn |
 | Market data: Dhan live source (WebSocket feed, instrument resolver, REST history) | **Done** | `backend/app/market/dhan/` | unit tests with a scripted fake socket; verified against the real service with a real token, after hours and during market hours (DHANHQ_API.md section 9) |
 | Market data: SSE endpoint `GET /api/stream/prices` | **Done** | `stream.py` | unit tests; streamed from uvicorn with Dhan data and with the simulator |
 | Console demo (`uv run python -m demo`): live table and per-symbol line charts, add/remove symbols | **Done** | `backend/demo/` | 38 unit tests incl. typed-input run of the real app; headless run against live Dhan |
 | Market data docs | **Done** | `planning/DHANHQ_API.md`, `MARKET_DATA_DESIGN.md`, `MARKET_INTERFACE.md`, `MARKET_SIMULATOR.md` | rewritten to match the code |
-| Database (SQLite schema, seed, lazy init) | Not started | `backend/db/` | |
-| Portfolio and trade API, watchlist API, snapshots task | Not started | | |
-| `/api/health` (should report `source.healthy()`) | Not started | | |
-| LLM chat integration and mock mode | Not started | | |
-| FastAPI app wiring (lifespan, static files) | Not started | | |
-| Frontend (Next.js) | Not started | `frontend/` | |
-| Dockerfile, start/stop scripts | Not started | | |
-| Playwright E2E tests | Not started | `test/` | |
+| Database (SQLite schema, seed, lazy init) | **Done** | `backend/db/` | 5 tests: schema, seeding once, rollback on error |
+| Portfolio and trade service, watchlist service, snapshots task | **Done** | `backend/app/portfolio.py`, `watchlist.py`, `snapshots.py` | 22 + 10 tests: fills, weighted cost, sells, rejections, priced-set rules, history |
+| `/api/health` (reports `source.healthy()`) | **Done** | `backend/app/api/system.py` | API test; smoke-tested under uvicorn and in the container |
+| LLM chat integration and mock mode | **Done** | `backend/app/chat.py`, `backend/app/llm/` | 10 tests incl. patched LiteLLM client; live Cerebras reply and trade verified in the browser |
+| FastAPI app wiring (lifespan, static files) | **Done** | `backend/app/main.py`, `backend/app/api/` | 14 API tests; static frontend served from one port |
+| Frontend (Next.js) | **Done** | `frontend/` | 39 Vitest tests; lint and typecheck clean; verified in Playwright |
+| Dockerfile, start/stop scripts | **Done** | `Dockerfile`, `docker-compose.yml`, `scripts/` | image built; container healthy; `/api/health` and chat verified |
+| Playwright E2E tests | **Done** | `test/tests/`, `test/live/` | 7 scenarios passing in `test/docker-compose.test.yml` (mock LLM, simulator); 30 live scenarios passing in market hours against the real account |
+| Functional scenarios | **Done** | `test/functional/scenarios.mjs` | 13 live scenarios passing (buy, sell, averaging, fractions, rejections, snapshots, watchlist, chat) |
 
 ### Market data: contract for the next components
 
@@ -521,8 +522,101 @@ _Last updated 2026-10-26. Update this table whenever a component changes state._
 
 ### Known limits and open items
 
-- Dhan was observed during market hours for 6 minutes only (about 1 tick/s per busy ticker, stable connection, no reconnects). Full-session behaviour is unobserved (DHANHQ_API.md section 11).
+- Dhan was observed during market hours for 6 minutes only (about 1 tick/s per busy ticker, stable connection, no reconnects). Market-hours sessions on 2026-11-02 are recorded in the live verification log below. A complete trading day is still unobserved (DHANHQ_API.md section 11).
 - Dhan tokens last 24 hours and are not renewed automatically; an expired token makes the source unhealthy until a new token is configured and the app restarted (MARKET_DATA_DESIGN.md section 6).
 - The simulator has no market calendar or holiday awareness.
 - The console demo's full-screen view needs a real Windows console (PowerShell, cmd, Windows Terminal); it was verified through typed-input tests and a headless run against live Dhan data, not by eye on every terminal. `prompt-toolkit` is a default dependency group, so the production image must be built without the `dev` and `demo` groups.
 
+
+### Deviations from this specification
+
+Recorded 2026-10-27 after the full build. The code follows the current behaviour listed here; the spec text above is unchanged.
+
+- **SSE cadence (section 6).** The stream sends one event whenever the price cache changes, not one every ~500 ms. With a live feed outside market hours, nothing is sent until a price moves.
+- **Health status (section 8).** `GET /api/health` returns HTTP 200 in all cases. `"status"` is `"ok"` when the market source is healthy and `"degraded"` when it is not. Callers must read the body, not the status code.
+- **Chat history (sections 7 and 9).** Turns are stored in `chat_messages`, but there is no endpoint to read them back. The frontend keeps the visible conversation in memory, so a page refresh clears it.
+- **Simulator symbols (section 6).** The simulator accepts any symbol matching `^[A-Z0-9][A-Z0-9&.\-]{0,19}$` and prices it deterministically. Dhan still rejects anything that is not an NSE equity. A trade or watchlist add on an unknown symbol therefore succeeds in simulator mode and fails in Dhan mode.
+- **Snapshot on startup (section 7).** The app records one portfolio snapshot when it starts, in addition to the 30-second and post-trade snapshots.
+- **Portfolio history query (section 8).** `range` accepts `1h`, `1d`, `7d` or `all` (default `all`), and `limit` returns the newest N rows, oldest first.
+- **Watchlist status codes (section 8).** Adding a ticker that is already watched returns 409; removing one that is not watched returns 404; unknown or malformed symbols return 400. Chat errors from the model return 503.
+- **Treemap (section 10).** The heatmap is a small squarified SVG layout written in the frontend, not a charting library.
+- **Backend layout (section 4).** Services and routes live under `backend/app/` as `portfolio.py`, `watchlist.py`, `chat.py`, `repository.py`, `api/` and `llm/`. The spec leaves the internal structure to the implementing agents.
+- **First buy on an unwatched ticker (sections 6 and 8).** The trade waits up to 5 seconds for the first price after subscribing. It is rejected only if no price arrives in that time, and the subscription is then released. The spec only says the trade is rejected when there is no price.
+- **Chat auto-execution (section 9).** Kept as specified, by decision on 2026-11-02, after a chat message sold every holding at once. Bulk actions have no confirmation step. Revisit this if the app is used with real money.
+- **Stop scripts (section 11).** `scripts/stop_windows.ps1` also removes unused images labelled `app=finally` that earlier rebuilds left behind. `scripts/stop_mac.sh` does not yet do this.
+- **Test layout (sections 4 and 12).** `test/` also contains `functional/` (scenario runner against any backend) and `live/` (browser suite for the live feed and the real account). The Playwright service in `test/docker-compose.test.yml` shares the app container network and reaches the app at `localhost:8000`, because the browser could not reach the app by service name.
+
+### Live market verification log
+
+Run against the Dhan live feed through `scripts/start_windows.ps1` (the `.env` is passed to Docker, not read by the scripts). Log timestamps in this section are UTC; IST is UTC+5:30. Correction: the first entries below were recorded as "pre-open" but ran during market hours (12:28 to 12:32 IST).
+
+**2026-11-02, market hours (12:28 to 12:32 IST)**
+
+| Check | Result |
+|---|---|
+| `/api/health` reports the live source | Pass: `market_source: dhan`, healthy |
+| Prices and day change arrive after start | Pass: all watchlist tickers priced within about 10 s |
+| Stream rate, 30 s sample | 60 events (about 2 per second) |
+| Non-NSE symbol (`NOPE`) rejected | Pass: 400, "NOPE is not an NSE equity" |
+| Valid NSE symbol outside defaults (`WIPRO`) added and priced | Pass: 201, then priced; removed afterwards (204) |
+| Buy and sell at live price (`RELIANCE`, 1 share) | Pass: filled at 1254.80, cash reconciled exactly |
+| Live LLM analysis grounded in the portfolio | Pass: cash and largest position matched the API |
+| Live LLM trade through chat (`INFY`, 1 share) | Pass: executed at the live price, shown inline |
+| Browser: connection, prices, heatmap, P&L chart, positions | Pass: connected, all 11 watchlist rows priced |
+
+**Open items to check during the session (not yet run)**
+
+- Stream and price behaviour from 09:15 to 15:30 IST, including tick rate and flash behaviour under real volume.
+- Day change figures against the official NSE close. RELIANCE showed about +7.7% at 12:30 IST; confirm the previous-close value.
+- Reconnection of the browser stream during a live session.
+- Token expiry: `/api/health` should report `degraded` and the header should stop updating. Not tested; needs an expired token.
+- The E2E suite assumes the simulator and a fresh database, so it is not run against live data.
+
+**2026-11-02, functional scenarios (`test/functional/scenarios.mjs`, live Dhan feed)**
+
+Result: 12 of 13 scenarios pass. The one failure is a defect (below), kept as a regression test.
+
+| Area | Scenarios | Result |
+|---|---|---|
+| Buying and selling | Open a position at the trade price; second buy averages cost; partial sell keeps average cost; fractional quantities; full sell removes the position | Pass |
+| Rejections | Overselling; buying beyond cash; zero, negative and unknown-side orders | Pass, and nothing changes after a rejection |
+| Snapshots | A successful trade adds a portfolio snapshot | Pass |
+| Watchlist | Duplicate (409), malformed and unsupported (400), unknown removal (404); add then remove round-trip | Pass |
+| Chat | "Buy 1 share" through the live LLM executes and is reported | Pass |
+| Unwatched NSE ticker | Buying a ticker not on the watchlist (WIPRO) prices it | **Fail** (defect 1) |
+
+**Defect 1 (fixed, see the re-run below): a first buy on an unwatched ticker never gets a price.**
+- A buy on an unpriced ticker calls `add_ticker`, then is rejected immediately with "not priced yet", because the first price takes about one second to arrive.
+- The `finally` block in `execute_trade` then calls `release_if_unused`, which unsubscribes the ticker before that price lands.
+- Each retry repeats the cycle, so the ticker can't be priced by trading alone. Three retries 1 second apart all fail.
+- Adding the same ticker to the watchlist works: the price arrives in about 1 second, and a second add after a remove also gets a price. So the feed itself is fine; the trade path is the problem.
+- Proposed fix (not applied, needs approval): when a buy is rejected only because the ticker is unpriced, wait up to about 5 seconds for the first price before rejecting, and keep the subscription while waiting.
+
+**Account state change, not caused by these scenarios:** the chat audit trail (`chat_messages` and `trades` tables) shows two chat messages from 07:00 to 07:01. "sell everything" sold all eight positions in one step, and "buy ICICIBANK 30% of my capital" then bought 223 shares. The app has no login, so the source of those messages is not recorded. The scenarios' own trades netted to zero.
+
+**Design risk:** chat trades execute immediately with no confirmation, so one ambiguous message can liquidate the portfolio. PLAN section 9 specifies auto-execution by design. This needs a decision: keep it, or require confirmation for bulk actions.
+
+**2026-11-02, functional scenarios re-run after the fix (live, market hours)**
+
+- Fix: `PortfolioService.execute_trade` waits up to 5 s for the first price of a ticker it has just subscribed to, before rejecting a buy. Verified by two unit tests (late first tick fills; no tick rejects and releases the subscription) and by a live WIPRO round trip.
+- Result: 13 of 13 scenarios pass against the live Dhan feed, with the Docker image rebuilt and restarted. Starting cash ₹7,22,359.60; ending cash ₹7,22,358.40. The ₹1.20 difference is the net of round trips that filled at the live price at each moment, not a loss from a bug.
+- Account state: the live account was used as instructed. Scenario trades net to zero shares; the holding left is ICICIBANK 223, as before the run.
+
+### Live end-to-end suite (2026-11-02, market hours, real account)
+
+`test/live/live.spec.ts`, run with `npm run test:live` in `test/`. Browser tests against the live Dhan feed, run in market hours. Assertions are relative, so they hold whatever the prices and holdings are. Every trade is reversed in the same test, and `afterAll` sells any leftover and removes the test watchlist entry.
+
+**Result: 30 of 30 passed.** One earlier run failed on a locator bug in the test (Next.js adds its own `role="alert"` element); the app behaved correctly and the locator was scoped to the app's error paragraphs.
+
+| Area | Scenarios |
+|---|---|
+| Market data | Connected with all tickers priced; prices move and flash; sparklines fill; day change matches backend; ticker click switches chart and trade ticker; dropped stream is reported and recovers |
+| Trading | Buy fills at live price and debits cash; sell closes position and credits cash; ticker case-insensitive; fractional quantities; zero quantity refused; overselling refused; rejected order leaves cash unchanged; server error shown |
+| Watchlist | Add NSE ticker, priced, remove; duplicate, non-NSE and malformed refused with reason |
+| Portfolio views | Heatmap tiles per holding and cash; P&L chart rendered; positions table agrees with API |
+| Assistant | Question answered and does not trade; loading indicator; buy in chat confirmed inline and reversed; watchlist changes in chat confirmed and reversed; panel hide and show; model error shown |
+| Layout and persistence | No horizontal scroll at 1366 and 1024 px; holdings and watchlist survive reload; conversation clears on reload (recorded deviation) |
+
+**Not covered by this suite:** mobile width (390 px; PLAN says desktop-first, tablet functional), token expiry, behaviour after the market closes at 15:30, and the simulator path.
+
+**Account after the run:** holdings unchanged (ICICIBANK 223), cash ₹7,22,358.40 as before the run, no test watchlist entry left behind.

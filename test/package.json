@@ -1,0 +1,13 @@
+{
+  "name": "finally-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "functional": "node functional/scenarios.mjs",
+    "test:live": "playwright test -c playwright.live.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
+  }
+}

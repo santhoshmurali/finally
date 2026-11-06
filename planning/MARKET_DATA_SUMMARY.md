@@ -79,9 +79,10 @@ Wiring contract: create the cache and source once in the FastAPI lifespan, `awai
 
 **Error mapping**: `DH-901`, `DH-902`, 806 to 810 map to `AuthenticationError`; `DH-904`, 805, HTTP 429 to `RateLimitError`; `DH-907` to empty; everything else to `DataUnavailableError`.
 
-## 8. Verified findings (live, 2026-10-22 and 2026-10-26)
+## 8. Verified findings (live, 2026-10-22, 2026-10-26 and 2026-11-02)
 
 - Previous Close packet equals the last completed daily bar's close (TCS 2529.0).
+- 2026-11-02, market hours: every watched ticker priced within about 10 s of start; a ticker subscribed by a trade gets its first price about 1 s later, so a trade made at once is rejected until the price arrives (see PLAN section 13).
 - In session a busy ticker pushes about once per second; quiet tickers can go silent 20 to 46 s while the connection is fine, so never time out per ticker.
 - 6-minute market-hours run: 2,349 ticks, zero reconnects, healthy throughout; all 10 tickers priced 1 s after `start()`; runtime `add_ticker` / `remove_ticker` worked.
 - `add_ticker("AAPL")` raises `UnsupportedTickerError`.
@@ -102,7 +103,7 @@ Runtime deps: `httpx`, `websockets`, `numpy`, `fastapi`, `uvicorn`. `prompt-tool
 
 ## 11. Testing and demo
 
-- `cd backend && uv run pytest` (163 tests including the demo); `uv run ruff check app tests demo` is clean; green on Python 3.12 and 3.14.
+- `cd backend && uv run pytest` (226 tests in the whole backend, of which 163 cover market data and the demo); `uv run ruff check app tests demo` is clean; green on Python 3.12 and 3.14.
 - Console demo: `cd backend && uv run python -m demo` (live table plus per-symbol line charts; `--plain N` for headless, `--simulator` explicit). Full-screen view needs a real Windows console.
 - Defects found and fixed during testing: quoted token rejected, range-dependent synthetic bars, random unknown-ticker seeds, token leaking via `websockets` DEBUG logs, backoff reset by server disconnects, single bad frame killing the feed, unmapped exceptions from malformed replies.
 

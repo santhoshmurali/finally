@@ -208,3 +208,12 @@ __marimo__/
 
 # Internal task tracker
 Tasktrackr.md
+
+# FinAlly runtime data (local SQLite file) and the frontend build copied for FastAPI
+/db/
+/static/
+
+# Node dependencies and Playwright output (frontend/ and test/ keep their own lockfiles)
+node_modules/
+test-results/
+playwright-report/

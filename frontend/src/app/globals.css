@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/* Dark trading-terminal palette from planning/PLAN.md section 2. */
+@theme {
+  --color-bg: #0d1117;
+  --color-panel: #161b22;
+  --color-panel-hi: #1c2330;
+  --color-line: #30363d;
+  --color-ink: #e6edf3;
+  --color-muted: #8b949e;
+  --color-accent: #ecad0a;
+  --color-primary: #209dd7;
+  --color-secondary: #753991;
+  --color-gain: #3fb950;
+  --color-loss: #f85149;
+  --color-warn: #d29922;
+}
+
+@layer components {
+  .panel-title {
+    @apply border-b border-line px-3 py-2 text-[11px] font-semibold tracking-wider text-muted uppercase;
+  }
+  .input {
+    @apply rounded border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none focus:border-primary;
+  }
+  .btn-secondary {
+    @apply rounded border border-line px-3 py-1.5 text-sm text-ink hover:bg-panel-hi;
+  }
+  .btn-buy {
+    @apply rounded bg-primary px-5 py-1.5 text-sm font-semibold text-white disabled:opacity-50;
+  }
+  .btn-sell {
+    @apply rounded bg-accent px-5 py-1.5 text-sm font-semibold text-black disabled:opacity-50;
+  }
+  .btn-submit {
+    @apply rounded bg-secondary px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-50;
+  }
+  .writing-vertical {
+    writing-mode: vertical-rl;
+  }
+}
+
+/* Price flash: a brief tint that fades over 500 ms. */
+@keyframes flash-up {
+  from {
+    background-color: rgba(63, 185, 80, 0.45);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes flash-down {
+  from {
+    background-color: rgba(248, 81, 73, 0.45);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.flash-up {
+  animation: flash-up 500ms ease-out;
+}
+
+.flash-down {
+  animation: flash-down 500ms ease-out;
+}

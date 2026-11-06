@@ -114,7 +114,7 @@ Dhan tokens last 24 hours. When one expires the source goes unhealthy (feed stop
 
 ## 7. Testing
 
-`cd backend && uv run pytest` runs 163 tests (125 for `app/market`, 38 for the console demo), **100% line coverage of `app/`** (`--cov=app`), also green on Python 3.12 (the Docker runtime) and 3.14. `uv run ruff check app tests demo` is clean.
+`cd backend && uv run pytest` ran 163 tests when this was written (125 for `app/market`, 38 for the console demo); the whole backend now runs 226, **100% line coverage of `app/`** (`--cov=app`), also green on Python 3.12 (the Docker runtime) and 3.14. `uv run ruff check app tests demo` is clean.
 
 | Test file | Covers |
 |---|---|

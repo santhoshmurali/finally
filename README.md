@@ -1,60 +1,64 @@
 # FinAlly — AI Trading Workstation
 
-A visually stunning AI-powered trading workstation that streams live market data, simulates portfolio trading, and integrates an LLM chat assistant that can analyze positions and execute trades via natural language.
+A dark, data-dense trading terminal for NSE stocks. Prices stream live, you trade a virtual ₹10,00,000 portfolio with market orders, and an AI assistant can analyse your holdings and execute trades through plain conversation.
 
 Built entirely by coding agents as a capstone project for an agentic AI coding course.
 
 ## Features
 
-- **Live price streaming** via SSE with green/red flash animations
-- **Simulated portfolio** — $10k virtual cash, market orders, instant fills
-- **Portfolio visualizations** — heatmap (treemap), P&L chart, positions table
-- **AI chat assistant** — analyzes holdings, suggests and auto-executes trades
-- **Watchlist management** — track tickers manually or via AI
-- **Dark terminal aesthetic** — Bloomberg-inspired, data-dense layout
+- **Live prices** over SSE, with green and red flash animations
+- **Simulated portfolio**: ₹10,00,000 virtual cash, market orders, instant fills, no fees
+- **Portfolio views**: treemap heatmap, value-over-time chart, positions table
+- **AI chat assistant**: analyses holdings, suggests trades, and executes them immediately (no confirmation step), with inline confirmations
+- **Watchlist management** by hand or through the chat
+
+## Quick start
+
+You need Docker Desktop running and an OpenRouter API key.
+
+```bash
+cp .env.example .env          # set OPENROUTER_API_KEY in .env
+scripts/start_mac.sh          # macOS / Linux
+scripts/start_windows.ps1     # Windows PowerShell
+```
+
+Open http://localhost:8000. Stop with `scripts/stop_mac.sh` or `scripts/stop_windows.ps1`; your data is kept in the `finally-data` volume.
+
+Without an API key, set `LLM_MOCK=true` for deterministic chat replies. Without a Dhan token, prices come from the built-in simulator.
+
+Full instructions, the API reference and the test commands are in [Docs/help.md](Docs/help.md).
 
 ## Architecture
 
-Single Docker container serving everything on port 8000:
+One container on port 8000:
 
-- **Frontend**: Next.js (static export) with TypeScript and Tailwind CSS
-- **Backend**: FastAPI (Python/uv) with SSE streaming
-- **Database**: SQLite with lazy initialization
-- **AI**: LiteLLM → OpenRouter (Cerebras inference; CoreWeave as an alternate provider) with structured outputs
-- **Market data**: Built-in GBM simulator (default) or Massive API (optional)
+- **Frontend**: Next.js (static export), TypeScript, Tailwind CSS, Lightweight Charts
+- **Backend**: FastAPI (Python, managed with uv), SSE for prices
+- **Database**: SQLite, created on first use
+- **AI**: LiteLLM → OpenRouter → Cerebras, with structured outputs
+- **Market data**: live NSE prices from DhanHQ when `DHAN_ACESS_TOKEN` is set; otherwise a GBM simulator
 
-## Quick Start
-
-```bash
-# Clone and configure
-cp .env.example .env
-# Add your OPENROUTER_API_KEY to .env
-
-# Run with Docker
-docker build -t finally .
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
-
-# Open http://localhost:8000
-```
-
-## Environment Variables
+## Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key for AI chat |
-| `MASSIVE_API_KEY` | No | Massive (Polygon.io) key for real market data; omit to use simulator |
-| `LLM_MOCK` | No | Set `true` for deterministic mock LLM responses (testing) |
+| `OPENROUTER_API_KEY` | For chat | OpenRouter API key |
+| `LLM_MOCK` | No | `true` for deterministic mock chat replies |
+| `DHAN_ACESS_TOKEN` | No | Dhan access token for live NSE data (needs the Data API plan) |
+| `DHAN_CLIENT_ID` | No | Overrides the client ID inside the Dhan token |
+| `MARKET_SEED` | No | Makes the simulator reproducible |
 
-## Project Structure
+## Project structure
 
 ```
 finally/
-├── frontend/    # Next.js static export
-├── backend/     # FastAPI uv project
-├── planning/    # Project documentation and agent contracts
-├── test/        # Playwright E2E tests
-├── db/          # SQLite volume mount (runtime)
-└── scripts/     # Start/stop helpers
+├── frontend/    # Next.js static export (TypeScript, Tailwind)
+├── backend/     # FastAPI app, market data, database, LLM chat (uv project)
+├── test/        # Playwright end-to-end tests and docker-compose.test.yml
+├── planning/    # Specification and implementation status
+├── Docs/        # Help and readme
+├── scripts/     # Start and stop helpers
+└── Dockerfile   # Multi-stage build: Node, then Python
 ```
 
 ## License
